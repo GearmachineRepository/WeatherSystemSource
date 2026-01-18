@@ -5,8 +5,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Weather = Shared:WaitForChild("Weather")
 local WeatherConfig = require(Weather:WaitForChild("WeatherConfig"))
-local WeatherEffects = require(Weather:WaitForChild("WeatherEffects"))
-local WeatherFronts = require(Weather:WaitForChild("WeatherFronts"))
 local FrontManager = require(Weather:WaitForChild("FrontManager"))
 
 local ZonesFolder = workspace:WaitForChild("Zones")
@@ -18,10 +16,6 @@ type ZoneData = {
 	Priority: number,
 	Volume: number,
 	Center: Vector3,
-	CurrentState: string,
-	PreviousState: string,
-	TimeInState: number,
-	AffectingFrontId: string?,
 }
 
 local Zones: { [string]: ZoneData } = {}
@@ -84,7 +78,6 @@ local function InitializeZone(ZoneInstance: Instance): ZoneData?
 	end
 
 	local Center = CalculateZoneCenter(Parts)
-	local InitialState = WeatherFronts.GetCalmWeather(Biome)
 
 	return {
 		Name = ZoneName,
@@ -93,114 +86,12 @@ local function InitializeZone(ZoneInstance: Instance): ZoneData?
 		Priority = Priority,
 		Volume = TotalVolume,
 		Center = Center,
-		CurrentState = InitialState,
-		PreviousState = InitialState,
-		TimeInState = 0,
-		AffectingFrontId = nil,
 	}
 end
 
-local function SetZoneAttributes(ZoneInstance: Instance, ZoneData: ZoneData, Effects: typeof(WeatherEffects.States.Clear))
-	ZoneInstance:SetAttribute("WeatherState", ZoneData.CurrentState)
-	ZoneInstance:SetAttribute("CloudCover", Effects.Clouds.Cover)
-	ZoneInstance:SetAttribute("CloudDensity", Effects.Clouds.Density)
-	ZoneInstance:SetAttribute("CloudColorR", Effects.Clouds.Color.R)
-	ZoneInstance:SetAttribute("CloudColorG", Effects.Clouds.Color.G)
-	ZoneInstance:SetAttribute("CloudColorB", Effects.Clouds.Color.B)
-	ZoneInstance:SetAttribute("AtmosphereDensity", Effects.Atmosphere.Density)
-	ZoneInstance:SetAttribute("AtmosphereOffset", Effects.Atmosphere.Offset)
-	ZoneInstance:SetAttribute("AtmosphereColorR", Effects.Atmosphere.Color.R)
-	ZoneInstance:SetAttribute("AtmosphereColorG", Effects.Atmosphere.Color.G)
-	ZoneInstance:SetAttribute("AtmosphereColorB", Effects.Atmosphere.Color.B)
-	ZoneInstance:SetAttribute("AtmosphereDecayR", Effects.Atmosphere.Decay.R)
-	ZoneInstance:SetAttribute("AtmosphereDecayG", Effects.Atmosphere.Decay.G)
-	ZoneInstance:SetAttribute("AtmosphereDecayB", Effects.Atmosphere.Decay.B)
-	ZoneInstance:SetAttribute("AtmosphereGlare", Effects.Atmosphere.Glare)
-	ZoneInstance:SetAttribute("AtmosphereHaze", Effects.Atmosphere.Haze)
-	ZoneInstance:SetAttribute("LightingAmbientR", Effects.Lighting.Ambient.R)
-	ZoneInstance:SetAttribute("LightingAmbientG", Effects.Lighting.Ambient.G)
-	ZoneInstance:SetAttribute("LightingAmbientB", Effects.Lighting.Ambient.B)
-	ZoneInstance:SetAttribute("LightingBrightness", Effects.Lighting.Brightness)
-	ZoneInstance:SetAttribute("LightingExposure", Effects.Lighting.ExposureCompensation)
-	ZoneInstance:SetAttribute("RainEnabled", Effects.Particles.Rain.Enabled)
-	ZoneInstance:SetAttribute("RainRate", Effects.Particles.Rain.Rate or 0)
-	ZoneInstance:SetAttribute("SnowEnabled", Effects.Particles.Snow.Enabled)
-	ZoneInstance:SetAttribute("SnowRate", Effects.Particles.Snow.Rate or 0)
-	ZoneInstance:SetAttribute("RainVolume", Effects.Sounds.Rain.Volume)
-	ZoneInstance:SetAttribute("ThunderVolume", Effects.Sounds.Thunder.Volume)
-	ZoneInstance:SetAttribute("WindBreezeVolume", Effects.Sounds.WindBreeze.Volume)
-	ZoneInstance:SetAttribute("WindGustyVolume", Effects.Sounds.WindGusty.Volume)
-	ZoneInstance:SetAttribute("WindSpeedMin", Effects.Wind.SpeedMin)
-	ZoneInstance:SetAttribute("WindSpeedMax", Effects.Wind.SpeedMax)
-end
-
-local function GetZoneInstance(ZoneName: string): Instance?
-	return ZonesFolder:FindFirstChild(ZoneName)
-end
-
-local function UpdateZone(ZoneData: ZoneData, DeltaTime: number)
-	local ZoneInstance = GetZoneInstance(ZoneData.Name)
-
-	local ForcedState = ZoneInstance and ZoneInstance:GetAttribute("DebugForceState")
-	if ForcedState and WeatherEffects.States[ForcedState] then
-		if ZoneData.CurrentState ~= ForcedState then
-			ZoneData.PreviousState = ZoneData.CurrentState
-			ZoneData.CurrentState = ForcedState
-			ZoneData.TimeInState = 0
-		end
-
-		local Effects = WeatherEffects.States[ForcedState]
-		if ZoneInstance then
-			SetZoneAttributes(ZoneInstance, ZoneData, Effects)
-		end
-		return
-	end
-
-	ZoneData.TimeInState = ZoneData.TimeInState + DeltaTime
-
-	local AffectingFront = FrontManager.GetFrontAtPosition(ZoneData.Center)
-	local NewState: string
-
-	if AffectingFront then
-		NewState = WeatherFronts.GetWeatherForFront(AffectingFront.Type, AffectingFront.Intensity, ZoneData.Biome)
-		ZoneData.AffectingFrontId = AffectingFront.Id
-	else
-		ZoneData.AffectingFrontId = nil
-
-		local MinDuration = 45
-		local StateConfig = WeatherConfig.States[ZoneData.CurrentState]
-		if StateConfig then
-			MinDuration = StateConfig.MinimumDuration
-		end
-
-		if ZoneData.TimeInState >= MinDuration then
-			local TransitionChance = 0.08 + (ZoneData.TimeInState - MinDuration) * 0.002
-			TransitionChance = math.clamp(TransitionChance, 0.08, 0.3)
-
-			if math.random() < TransitionChance then
-				NewState = WeatherFronts.GetCalmWeather(ZoneData.Biome)
-			else
-				NewState = ZoneData.CurrentState
-			end
-		else
-			NewState = ZoneData.CurrentState
-		end
-	end
-
-	if NewState ~= ZoneData.CurrentState then
-		ZoneData.PreviousState = ZoneData.CurrentState
-		ZoneData.CurrentState = NewState
-		ZoneData.TimeInState = 0
-	end
-
-	local Effects = WeatherEffects.States[ZoneData.CurrentState]
-	if not Effects then
-		Effects = WeatherEffects.States.Clear
-	end
-
-	if ZoneInstance then
-		SetZoneAttributes(ZoneInstance, ZoneData, Effects)
-	end
+local function SetZoneAttributes(ZoneInstance: Instance, ZoneData: ZoneData)
+	ZoneInstance:SetAttribute("Biome", ZoneData.Biome)
+	ZoneInstance:SetAttribute("Priority", ZoneData.Priority)
 end
 
 local function InitializeAllZones()
@@ -208,13 +99,7 @@ local function InitializeAllZones()
 		local ZoneData = InitializeZone(Child)
 		if ZoneData then
 			Zones[ZoneData.Name] = ZoneData
-
-			local Effects = WeatherEffects.States[ZoneData.CurrentState]
-			if not Effects then
-				Effects = WeatherEffects.States.Clear
-			end
-
-			SetZoneAttributes(Child, ZoneData, Effects)
+			SetZoneAttributes(Child, ZoneData)
 		end
 	end
 end
@@ -223,13 +108,7 @@ local function OnZoneAdded(ZoneInstance: Instance)
 	local ZoneData = InitializeZone(ZoneInstance)
 	if ZoneData then
 		Zones[ZoneData.Name] = ZoneData
-
-		local Effects = WeatherEffects.States[ZoneData.CurrentState]
-		if not Effects then
-			Effects = WeatherEffects.States.Clear
-		end
-
-		SetZoneAttributes(ZoneInstance, ZoneData, Effects)
+		SetZoneAttributes(ZoneInstance, ZoneData)
 	end
 end
 
@@ -243,10 +122,6 @@ local function ServerTick()
 	LastTickTime = CurrentTime
 
 	FrontManager.Update(DeltaTime)
-
-	for _, ZoneData in pairs(Zones) do
-		UpdateZone(ZoneData, DeltaTime)
-	end
 end
 
 FrontManager.Initialize()
@@ -255,7 +130,9 @@ InitializeAllZones()
 ZonesFolder.ChildAdded:Connect(OnZoneAdded)
 ZonesFolder.ChildRemoved:Connect(OnZoneRemoved)
 
+LastTickTime = os.clock()
+
 while true do
-	ServerTick()
 	task.wait(WeatherConfig.TICK_RATE)
+	ServerTick()
 end

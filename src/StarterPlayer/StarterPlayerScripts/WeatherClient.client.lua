@@ -9,6 +9,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Weather = Shared:WaitForChild("Weather")
 local WeatherConfig = require(Weather:WaitForChild("WeatherConfig"))
 local WeatherEffects = require(Weather:WaitForChild("WeatherEffects"))
+local WeatherFronts = require(Weather:WaitForChild("WeatherFronts"))
 local FrontVisualizer = require(Weather:WaitForChild("FrontVisualizer"))
 
 local WeatherAssets = ReplicatedStorage:WaitForChild("WeatherAssets")
@@ -58,9 +59,14 @@ type InterpolationData = {
 }
 
 local CurrentZone: Instance? = nil
+local CurrentBiome: string = WeatherConfig.DEFAULT_BIOME
 local CurrentWeatherState: string = "Clear"
 local CurrentTargets: EffectTargets? = nil
 local Interpolation: InterpolationData? = nil
+
+local CurrentFrontId: string? = nil
+local CurrentFrontDepth: number = 0
+local LastFrontType: string? = nil
 
 local RainEmitter: ParticleEmitter? = nil
 local SnowEmitter: ParticleEmitter? = nil
@@ -206,6 +212,10 @@ local function GetZonePriority(Zone: Instance): number
 	return Zone:GetAttribute("Priority") or 0
 end
 
+local function GetZoneBiome(Zone: Instance): string
+	return Zone:GetAttribute("Biome") or WeatherConfig.DEFAULT_BIOME
+end
+
 local function DetectCurrentZone(): Instance?
 	local Character = LocalPlayer.Character
 	if not Character then
@@ -259,52 +269,23 @@ local function DetectCurrentZone(): Instance?
 	return CandidateZones[1]
 end
 
-local function ReadZoneTargets(Zone: Instance): EffectTargets
-	return {
-		CloudCover = Zone:GetAttribute("CloudCover") or 0.2,
-		CloudDensity = Zone:GetAttribute("CloudDensity") or 0.15,
-		CloudColor = Color3.new(
-			Zone:GetAttribute("CloudColorR") or 1,
-			Zone:GetAttribute("CloudColorG") or 1,
-			Zone:GetAttribute("CloudColorB") or 1
-		),
-		AtmosphereDensity = Zone:GetAttribute("AtmosphereDensity") or 0.3,
-		AtmosphereOffset = Zone:GetAttribute("AtmosphereOffset") or 0.1,
-		AtmosphereColor = Color3.new(
-			Zone:GetAttribute("AtmosphereColorR") or 0.78,
-			Zone:GetAttribute("AtmosphereColorG") or 0.78,
-			Zone:GetAttribute("AtmosphereColorB") or 0.78
-		),
-		AtmosphereDecay = Color3.new(
-			Zone:GetAttribute("AtmosphereDecayR") or 0.36,
-			Zone:GetAttribute("AtmosphereDecayG") or 0.47,
-			Zone:GetAttribute("AtmosphereDecayB") or 0.59
-		),
-		AtmosphereGlare = Zone:GetAttribute("AtmosphereGlare") or 0.5,
-		AtmosphereHaze = Zone:GetAttribute("AtmosphereHaze") or 1.5,
-		LightingAmbient = Color3.new(
-			Zone:GetAttribute("LightingAmbientR") or 0.59,
-			Zone:GetAttribute("LightingAmbientG") or 0.59,
-			Zone:GetAttribute("LightingAmbientB") or 0.59
-		),
-		LightingBrightness = Zone:GetAttribute("LightingBrightness") or 2,
-		LightingExposure = Zone:GetAttribute("LightingExposure") or 0,
-		RainEnabled = Zone:GetAttribute("RainEnabled") or false,
-		RainRate = Zone:GetAttribute("RainRate") or 0,
-		SnowEnabled = Zone:GetAttribute("SnowEnabled") or false,
-		SnowRate = Zone:GetAttribute("SnowRate") or 0,
-		RainVolume = Zone:GetAttribute("RainVolume") or 0,
-		ThunderVolume = Zone:GetAttribute("ThunderVolume") or 0,
-		WindBreezeVolume = Zone:GetAttribute("WindBreezeVolume") or 0.15,
-		WindGustyVolume = Zone:GetAttribute("WindGustyVolume") or 0,
-		WindSpeedMin = Zone:GetAttribute("WindSpeedMin") or 2,
-		WindSpeedMax = Zone:GetAttribute("WindSpeedMax") or 6,
-	}
+local function GetWeatherStateFromFront(FrontType: string, FrontIntensity: number, Biome: string, Depth: number): string
+	return WeatherFronts.GetWeatherForFront(FrontType, FrontIntensity, Biome, Depth)
 end
 
-local function GetDefaultTargets(): EffectTargets
+local function GetEffectsForState(StateName: string): typeof(WeatherEffects.States.Clear)
+	local Effects = WeatherEffects.States[StateName]
+	if not Effects then
+		Effects = WeatherEffects.States.Clear
+	end
+	return Effects
+end
+
+local function GetBiomeBaseline(BiomeName: string): EffectTargets
 	local DefaultEffects = WeatherEffects.States.Clear
-	return {
+	local BiomeConfig = WeatherConfig.Biomes[BiomeName]
+
+	local Baseline: EffectTargets = {
 		CloudCover = DefaultEffects.Clouds.Cover,
 		CloudDensity = DefaultEffects.Clouds.Density,
 		CloudColor = DefaultEffects.Clouds.Color,
@@ -327,6 +308,119 @@ local function GetDefaultTargets(): EffectTargets
 		WindGustyVolume = DefaultEffects.Sounds.WindGusty.Volume,
 		WindSpeedMin = DefaultEffects.Wind.SpeedMin,
 		WindSpeedMax = DefaultEffects.Wind.SpeedMax,
+	}
+
+	if BiomeConfig then
+		if BiomeConfig.Lighting then
+			Baseline.LightingAmbient = BiomeConfig.Lighting.Ambient
+			Baseline.LightingBrightness = BiomeConfig.Lighting.Brightness
+			Baseline.LightingExposure = BiomeConfig.Lighting.ExposureCompensation
+		end
+
+		if BiomeConfig.Atmosphere then
+			Baseline.AtmosphereDensity = BiomeConfig.Atmosphere.Density
+			Baseline.AtmosphereOffset = BiomeConfig.Atmosphere.Offset
+			Baseline.AtmosphereColor = BiomeConfig.Atmosphere.Color
+			Baseline.AtmosphereDecay = BiomeConfig.Atmosphere.Decay
+			Baseline.AtmosphereGlare = BiomeConfig.Atmosphere.Glare
+			Baseline.AtmosphereHaze = BiomeConfig.Atmosphere.Haze
+		end
+	end
+
+	return Baseline
+end
+
+local function GetZoneOverrides(Zone: Instance, Baseline: EffectTargets): EffectTargets
+	local Overrides = Baseline
+
+	local AmbientR = Zone:GetAttribute("AmbientR")
+	local AmbientG = Zone:GetAttribute("AmbientG")
+	local AmbientB = Zone:GetAttribute("AmbientB")
+	if AmbientR and AmbientG and AmbientB then
+		Overrides.LightingAmbient = Color3.new(AmbientR, AmbientG, AmbientB)
+	end
+
+	local Brightness = Zone:GetAttribute("Brightness")
+	if Brightness then
+		Overrides.LightingBrightness = Brightness
+	end
+
+	local Exposure = Zone:GetAttribute("ExposureCompensation")
+	if Exposure then
+		Overrides.LightingExposure = Exposure
+	end
+
+	local AtmoDensity = Zone:GetAttribute("AtmosphereDensity")
+	if AtmoDensity then
+		Overrides.AtmosphereDensity = AtmoDensity
+	end
+
+	local AtmoOffset = Zone:GetAttribute("AtmosphereOffset")
+	if AtmoOffset then
+		Overrides.AtmosphereOffset = AtmoOffset
+	end
+
+	local AtmoColorR = Zone:GetAttribute("AtmosphereColorR")
+	local AtmoColorG = Zone:GetAttribute("AtmosphereColorG")
+	local AtmoColorB = Zone:GetAttribute("AtmosphereColorB")
+	if AtmoColorR and AtmoColorG and AtmoColorB then
+		Overrides.AtmosphereColor = Color3.new(AtmoColorR, AtmoColorG, AtmoColorB)
+	end
+
+	local AtmoDecayR = Zone:GetAttribute("AtmosphereDecayR")
+	local AtmoDecayG = Zone:GetAttribute("AtmosphereDecayG")
+	local AtmoDecayB = Zone:GetAttribute("AtmosphereDecayB")
+	if AtmoDecayR and AtmoDecayG and AtmoDecayB then
+		Overrides.AtmosphereDecay = Color3.new(AtmoDecayR, AtmoDecayG, AtmoDecayB)
+	end
+
+	local AtmoGlare = Zone:GetAttribute("AtmosphereGlare")
+	if AtmoGlare then
+		Overrides.AtmosphereGlare = AtmoGlare
+	end
+
+	local AtmoHaze = Zone:GetAttribute("AtmosphereHaze")
+	if AtmoHaze then
+		Overrides.AtmosphereHaze = AtmoHaze
+	end
+
+	return Overrides
+end
+
+local function GetDefaultTargets(): EffectTargets
+	local Baseline = GetBiomeBaseline(CurrentBiome)
+
+	if CurrentZone then
+		Baseline = GetZoneOverrides(CurrentZone, Baseline)
+	end
+
+	return Baseline
+end
+
+local function GetTargetsFromEffects(Effects: typeof(WeatherEffects.States.Clear)): EffectTargets
+	return {
+		CloudCover = Effects.Clouds.Cover,
+		CloudDensity = Effects.Clouds.Density,
+		CloudColor = Effects.Clouds.Color,
+		AtmosphereDensity = Effects.Atmosphere.Density,
+		AtmosphereOffset = Effects.Atmosphere.Offset,
+		AtmosphereColor = Effects.Atmosphere.Color,
+		AtmosphereDecay = Effects.Atmosphere.Decay,
+		AtmosphereGlare = Effects.Atmosphere.Glare,
+		AtmosphereHaze = Effects.Atmosphere.Haze,
+		LightingAmbient = Effects.Lighting.Ambient,
+		LightingBrightness = Effects.Lighting.Brightness,
+		LightingExposure = Effects.Lighting.ExposureCompensation,
+		RainEnabled = Effects.Particles.Rain.Enabled,
+		RainRate = Effects.Particles.Rain.Rate or 0,
+		SnowEnabled = Effects.Particles.Snow.Enabled,
+		SnowRate = Effects.Particles.Snow.Rate or 0,
+		RainVolume = Effects.Sounds.Rain.Volume,
+		ThunderVolume = Effects.Sounds.Thunder.Volume,
+		WindBreezeVolume = Effects.Sounds.WindBreeze.Volume,
+		WindGustyVolume = Effects.Sounds.WindGusty.Volume,
+		WindSpeedMin = Effects.Wind.SpeedMin,
+		WindSpeedMax = Effects.Wind.SpeedMax,
 	}
 end
 
@@ -367,6 +461,63 @@ local function LerpColor3(From: Color3, To: Color3, Alpha: number): Color3
 		LerpNumber(From.G, To.G, Alpha),
 		LerpNumber(From.B, To.B, Alpha)
 	)
+end
+
+local function SmoothStepAlpha(Alpha: number): number
+	return Alpha * Alpha * (3 - 2 * Alpha)
+end
+
+local function CloudCoverAlpha(Depth: number): number
+	local Boosted = math.min(1, Depth * 1.8)
+	return Boosted * Boosted * (3 - 2 * Boosted)
+end
+
+local function ApplyTargetsWithDepth(
+	ClearTargets: EffectTargets,
+	WeatherTargets: EffectTargets,
+	DepthAlpha: number
+)
+	local SmoothedDepth = SmoothStepAlpha(DepthAlpha)
+	local CloudDepth = CloudCoverAlpha(DepthAlpha)
+
+	Clouds.Cover = LerpNumber(ClearTargets.CloudCover, WeatherTargets.CloudCover, CloudDepth)
+	Clouds.Density = LerpNumber(ClearTargets.CloudDensity, WeatherTargets.CloudDensity, CloudDepth)
+	Clouds.Color = LerpColor3(ClearTargets.CloudColor, WeatherTargets.CloudColor, CloudDepth)
+
+	if Atmosphere then
+		Atmosphere.Density = LerpNumber(ClearTargets.AtmosphereDensity, WeatherTargets.AtmosphereDensity, SmoothedDepth)
+		Atmosphere.Offset = LerpNumber(ClearTargets.AtmosphereOffset, WeatherTargets.AtmosphereOffset, SmoothedDepth)
+		Atmosphere.Color = LerpColor3(ClearTargets.AtmosphereColor, WeatherTargets.AtmosphereColor, SmoothedDepth)
+		Atmosphere.Decay = LerpColor3(ClearTargets.AtmosphereDecay, WeatherTargets.AtmosphereDecay, SmoothedDepth)
+		Atmosphere.Glare = LerpNumber(ClearTargets.AtmosphereGlare, WeatherTargets.AtmosphereGlare, SmoothedDepth)
+		Atmosphere.Haze = LerpNumber(ClearTargets.AtmosphereHaze, WeatherTargets.AtmosphereHaze, SmoothedDepth)
+	end
+
+	Lighting.Ambient = LerpColor3(ClearTargets.LightingAmbient, WeatherTargets.LightingAmbient, SmoothedDepth)
+	BaseLightingBrightness = LerpNumber(ClearTargets.LightingBrightness, WeatherTargets.LightingBrightness, SmoothedDepth)
+	Lighting.Brightness = BaseLightingBrightness
+	Lighting.ExposureCompensation = LerpNumber(ClearTargets.LightingExposure, WeatherTargets.LightingExposure, SmoothedDepth)
+
+	if RainEmitter then
+		local RainRate = LerpNumber(ClearTargets.RainRate, WeatherTargets.RainRate, SmoothedDepth)
+		RainEmitter.Enabled = RainRate > 0
+		RainEmitter.Rate = RainRate
+	end
+
+	if SnowEmitter then
+		local SnowRate = LerpNumber(ClearTargets.SnowRate, WeatherTargets.SnowRate, SmoothedDepth)
+		SnowEmitter.Enabled = SnowRate > 0
+		SnowEmitter.Rate = SnowRate
+	end
+
+	if RainSound then
+		RainSound.Volume = LerpNumber(ClearTargets.RainVolume, WeatherTargets.RainVolume, SmoothedDepth)
+	end
+
+	TargetWindSpeedMin = LerpNumber(ClearTargets.WindSpeedMin, WeatherTargets.WindSpeedMin, SmoothedDepth)
+	TargetWindSpeedMax = LerpNumber(ClearTargets.WindSpeedMax, WeatherTargets.WindSpeedMax, SmoothedDepth)
+	TargetWindBreezeVolume = LerpNumber(ClearTargets.WindBreezeVolume, WeatherTargets.WindBreezeVolume, SmoothedDepth)
+	TargetWindGustyVolume = LerpNumber(ClearTargets.WindGustyVolume, WeatherTargets.WindGustyVolume, SmoothedDepth)
 end
 
 local function ApplyTargets(Targets: EffectTargets, Alpha: number, From: EffectTargets)
@@ -422,38 +573,20 @@ local function StartInterpolation(NewTargets: EffectTargets, Duration: number)
 end
 
 local function OnZoneChanged(NewZone: Instance?)
-	local NewTargets: EffectTargets
+	local OldBiome = CurrentBiome
 
 	if NewZone then
-		NewTargets = ReadZoneTargets(NewZone)
-		CurrentWeatherState = NewZone:GetAttribute("WeatherState") or "Clear"
+		CurrentBiome = GetZoneBiome(NewZone)
 	else
-		NewTargets = GetDefaultTargets()
-		CurrentWeatherState = "Clear"
+		CurrentBiome = WeatherConfig.DEFAULT_BIOME
 	end
 
-	CurrentTargets = NewTargets
-	StartInterpolation(NewTargets, WeatherEffects.ZONE_CHANGE_TIME)
-end
+	local BiomeChanged = OldBiome ~= CurrentBiome
 
-local function OnWeatherAttributeChanged(Zone: Instance)
-	if Zone ~= CurrentZone then
-		return
+	if BiomeChanged and CurrentFrontDepth <= 0 then
+		local NewBaseline = GetDefaultTargets()
+		StartInterpolation(NewBaseline, WeatherEffects.ZONE_CHANGE_TIME)
 	end
-
-	local NewState = Zone:GetAttribute("WeatherState")
-	if NewState and NewState ~= CurrentWeatherState then
-		CurrentWeatherState = NewState
-		local NewTargets = ReadZoneTargets(Zone)
-		CurrentTargets = NewTargets
-		StartInterpolation(NewTargets, WeatherEffects.TRANSITION_TIME)
-	end
-end
-
-local function ConnectZoneAttributeListeners(Zone: Instance)
-	Zone:GetAttributeChangedSignal("WeatherState"):Connect(function()
-		OnWeatherAttributeChanged(Zone)
-	end)
 end
 
 local RaycastParamsForLightning: RaycastParams = RaycastParams.new()
@@ -519,6 +652,13 @@ local function TriggerLightningStrike()
 
 	local HumanoidRootPart: BasePart? = Character:FindFirstChild("HumanoidRootPart") :: BasePart?
 	if not HumanoidRootPart then
+		return
+	end
+
+	local TypeConfig = WeatherFronts.Types[LastFrontType or "Storm"]
+	local DepthThreshold = TypeConfig and TypeConfig.LightningDepthThreshold or 0.35
+
+	if CurrentFrontDepth < DepthThreshold then
 		return
 	end
 
@@ -600,7 +740,7 @@ local function TriggerLightningStrike()
 
 	local BranchBolts: { any } = {}
 
-	for BranchIndex = 1, BranchCount do
+	for _ = 1, BranchCount do
 		local PercentAlongTrunk: number = 0.22 + math.random() * 0.58
 		local TrunkPoint: Vector3 = StartPosition:Lerp(EndPosition, PercentAlongTrunk)
 
@@ -723,11 +863,19 @@ local function TriggerLightningStrike()
 end
 
 local function UpdateLightning(DeltaTime: number)
-	if CurrentWeatherState ~= "Thunderstorm" then
+	if not WeatherEffects.Lightning.Enabled then
 		return
 	end
 
-	if not WeatherEffects.Lightning.Enabled then
+	local TypeConfig = LastFrontType and WeatherFronts.Types[LastFrontType]
+	if not TypeConfig or not TypeConfig.HasLightning then
+		return
+	end
+
+	local IntensityThreshold = TypeConfig.LightningThreshold or 0.55
+	local FrontIntensity = FrontVisualizer.GetCurrentFrontIntensity()
+
+	if FrontIntensity < IntensityThreshold then
 		return
 	end
 
@@ -759,7 +907,7 @@ local function UpdateInterpolation()
 	local Elapsed = CurrentTime - Interpolation.StartTime
 	local Alpha = math.clamp(Elapsed / Interpolation.Duration, 0, 1)
 
-	Alpha = Alpha * Alpha * (3 - 2 * Alpha)
+	Alpha = SmoothStepAlpha(Alpha)
 
 	ApplyTargets(Interpolation.To, Alpha, Interpolation.From)
 
@@ -858,22 +1006,65 @@ local function CheckZone()
 
 	if DetectedZone ~= CurrentZone then
 		CurrentZone = DetectedZone
+		OnZoneChanged(DetectedZone)
+	end
+end
 
-		if DetectedZone then
-			ConnectZoneAttributeListeners(DetectedZone)
+local LastWeatherDebugTime = 0
+
+local function UpdateWeatherFromFronts()
+	local FrontId, FrontType, FrontIntensity, Depth = FrontVisualizer.GetFrontAffectingPlayer()
+
+	local DepthChanged = math.abs((Depth or 0) - CurrentFrontDepth) > 0.02
+	local FrontChanged = FrontId ~= CurrentFrontId
+
+	CurrentFrontId = FrontId
+	CurrentFrontDepth = Depth or 0
+
+	if FrontType then
+		LastFrontType = FrontType
+	end
+
+	local ClearTargets = GetDefaultTargets()
+
+	if FrontId and FrontType and Depth and Depth > 0 then
+		local WeatherState = GetWeatherStateFromFront(FrontType, FrontIntensity or 0.5, CurrentBiome, Depth)
+		CurrentWeatherState = WeatherState
+
+		local CurrentTime = os.clock()
+		if CurrentTime - LastWeatherDebugTime > 3 then
+			LastWeatherDebugTime = CurrentTime
+			local EffectiveIntensity = (FrontIntensity or 0.5) + Depth * WeatherConfig.Fronts.DepthIntensityInfluence
 		end
 
-		OnZoneChanged(DetectedZone)
+		local WeatherEffectsData = GetEffectsForState(WeatherState)
+		local WeatherTargets = GetTargetsFromEffects(WeatherEffectsData)
+
+		CurrentTargets = WeatherTargets
+
+		ApplyTargetsWithDepth(ClearTargets, WeatherTargets, Depth)
+	else
+		CurrentWeatherState = "Clear"
+		CurrentTargets = ClearTargets
+
+		if FrontChanged or DepthChanged then
+			StartInterpolation(ClearTargets, WeatherEffects.ZONE_CHANGE_TIME)
+		end
 	end
 end
 
 local function OnRenderStep(DeltaTime: number)
 	CheckZone()
-	UpdateInterpolation()
+	FrontVisualizer.Update(DeltaTime)
+	UpdateWeatherFromFronts()
+
+	if CurrentFrontDepth <= 0 then
+		UpdateInterpolation()
+	end
+
 	UpdateParticlePosition()
 	UpdateWind(DeltaTime)
 	UpdateLightning(DeltaTime)
-	FrontVisualizer.Update(DeltaTime)
 end
 
 local function Initialize()
@@ -887,14 +1078,6 @@ local function Initialize()
 	SetupSounds()
 
 	NextLightningInterval = WeatherEffects.Lightning.IntervalMin
-
-	for _, Child in ipairs(ZonesFolder:GetChildren()) do
-		ConnectZoneAttributeListeners(Child)
-	end
-
-	ZonesFolder.ChildAdded:Connect(function(Child)
-		ConnectZoneAttributeListeners(Child)
-	end)
 
 	FrontVisualizer.Initialize()
 

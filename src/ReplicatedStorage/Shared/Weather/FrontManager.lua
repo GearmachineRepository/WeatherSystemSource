@@ -13,13 +13,15 @@ local FrontManager = {}
 type FrontData = {
 	Id: string,
 	Type: string,
-	PointA: Vector3,
-	PointB: Vector3,
-	Width: number,
+	Center: Vector3,
+	RadiusX: number,
+	RadiusZ: number,
+	Rotation: number,
 	Velocity: Vector3,
 	Intensity: number,
 	Age: number,
 	Lifespan: number,
+	NoiseSeed: number,
 	Instance: Configuration?,
 }
 
@@ -31,6 +33,9 @@ local WindSpeed = 12
 local WindSeed = math.random(1, 10000)
 
 local StartTime = 0
+local LastSpawnTime = 0
+local NextSpawnInterval = 0
+local IsInitializing = false
 
 local function GenerateId(): string
 	return HttpService:GenerateGUID(false):sub(1, 8)
@@ -52,10 +57,10 @@ end
 local function UpdateWind(TimeElapsed: number)
 	local Config = WeatherConfig.Wind
 
-	local NoiseX = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.2, 0, WindSeed)
-	local NoiseZ = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.2, 100, WindSeed)
+	local NoiseX = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.15, 0, WindSeed)
+	local NoiseZ = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.15, 100, WindSeed)
 
-	local Variance = Config.DirectionVariance * 0.25
+	local Variance = Config.DirectionVariance * 0.2
 	local Direction = Vector3.new(
 		Config.BaseDirection.X + NoiseX * Variance,
 		0,
@@ -66,61 +71,20 @@ local function UpdateWind(TimeElapsed: number)
 		WindDirection = Direction.Unit
 	end
 
-	local SpeedNoise = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.35, 200, WindSeed)
-	WindSpeed = 10 + SpeedNoise * 5
-	WindSpeed = math.clamp(WindSpeed, 7, 18)
+	local SpeedNoise = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.25, 200, WindSeed)
+	WindSpeed = 10 + SpeedNoise * 6
+	WindSpeed = math.clamp(WindSpeed, 6, 20)
 end
 
-local function GetFrontPerpendicular(): Vector3
-	local AbsX = math.abs(WindDirection.X)
-	local AbsZ = math.abs(WindDirection.Z)
-
-	if AbsX >= AbsZ then
-		return Vector3.new(0, 0, 1)
-	else
-		return Vector3.new(1, 0, 0)
-	end
-end
-
-local function GetFrontLength(): number
-	local BoundsMin, BoundsMax = GetBounds()
-	local AbsX = math.abs(WindDirection.X)
-	local AbsZ = math.abs(WindDirection.Z)
-
-	if AbsX >= AbsZ then
-		return (BoundsMax.Z - BoundsMin.Z) * (1.0 + math.random() * 0.4)
-	else
-		return (BoundsMax.X - BoundsMin.X) * (1.0 + math.random() * 0.4)
-	end
-end
-
-local function CreateFrontPoints(CenterX: number, CenterZ: number): (Vector3, Vector3)
-	local Perpendicular = GetFrontPerpendicular()
-	local FrontLength = GetFrontLength()
-
-	local AngleVariance = (math.random() - 0.5) * 0.3
-	local RotatedPerp = Vector3.new(
-		Perpendicular.X * math.cos(AngleVariance) - Perpendicular.Z * math.sin(AngleVariance),
-		0,
-		Perpendicular.X * math.sin(AngleVariance) + Perpendicular.Z * math.cos(AngleVariance)
-	)
-
-	local Center = Vector3.new(CenterX, 0, CenterZ)
-	local PointA = Center - RotatedPerp * (FrontLength / 2)
-	local PointB = Center + RotatedPerp * (FrontLength / 2)
-
-	return PointA, PointB
-end
-
-local function GetEdgeSpawnPosition(): (number, number)
+local function GetEdgeSpawnPosition(): Vector3
 	local BoundsMin, BoundsMax = GetBounds()
 	local Config = WeatherConfig.Fronts
-	local Buffer = Config.DespawnBuffer
+	local Buffer = Config.SpawnBuffer
 
-	local MapCenterX = (BoundsMin.X + BoundsMax.X) / 2
-	local MapCenterZ = (BoundsMin.Z + BoundsMax.Z) / 2
 	local MapWidth = BoundsMax.X - BoundsMin.X
 	local MapDepth = BoundsMax.Z - BoundsMin.Z
+	local MapCenterX = (BoundsMin.X + BoundsMax.X) / 2
+	local MapCenterZ = (BoundsMin.Z + BoundsMax.Z) / 2
 
 	local AbsX = math.abs(WindDirection.X)
 	local AbsZ = math.abs(WindDirection.Z)
@@ -128,44 +92,49 @@ local function GetEdgeSpawnPosition(): (number, number)
 	local SpawnX: number
 	local SpawnZ: number
 
+	local EdgeVariance = 0.7
+
 	if AbsX >= AbsZ then
 		if WindDirection.X > 0 then
 			SpawnX = BoundsMin.X - Buffer
 		else
 			SpawnX = BoundsMax.X + Buffer
 		end
-		SpawnZ = MapCenterZ + (math.random() - 0.5) * MapDepth * 0.6
+		SpawnZ = MapCenterZ + (math.random() - 0.5) * MapDepth * EdgeVariance
 	else
 		if WindDirection.Z > 0 then
 			SpawnZ = BoundsMin.Z - Buffer
 		else
 			SpawnZ = BoundsMax.Z + Buffer
 		end
-		SpawnX = MapCenterX + (math.random() - 0.5) * MapWidth * 0.6
+		SpawnX = MapCenterX + (math.random() - 0.5) * MapWidth * EdgeVariance
 	end
 
-	return SpawnX, SpawnZ
+	return Vector3.new(SpawnX, 0, SpawnZ)
 end
 
-local function GetDistributedMapPosition(Index: number, TotalCount: number): (number, number)
+local function GetDistributedMapPosition(Index: number, TotalCount: number): Vector3
 	local BoundsMin, BoundsMax = GetBounds()
 	local MapWidth = BoundsMax.X - BoundsMin.X
 	local MapDepth = BoundsMax.Z - BoundsMin.Z
+	local MapCenterX = (BoundsMin.X + BoundsMax.X) / 2
+	local MapCenterZ = (BoundsMin.Z + BoundsMax.Z) / 2
 
-	local GridSize = math.ceil(math.sqrt(TotalCount))
-	local GridX = (Index - 1) % GridSize
-	local GridZ = math.floor((Index - 1) / GridSize)
+	local GoldenAngle = math.pi * (3 - math.sqrt(5))
+	local Angle = Index * GoldenAngle
+	local Radius = math.sqrt(Index / TotalCount) * 0.8
 
-	local CellWidth = MapWidth / GridSize
-	local CellDepth = MapDepth / GridSize
+	local OffsetX = math.cos(Angle) * Radius * (MapWidth / 2)
+	local OffsetZ = math.sin(Angle) * Radius * (MapDepth / 2)
 
-	local BaseX = BoundsMin.X + CellWidth * (GridX + 0.5)
-	local BaseZ = BoundsMin.Z + CellDepth * (GridZ + 0.5)
+	local JitterX = (math.random() - 0.5) * MapWidth * 0.15
+	local JitterZ = (math.random() - 0.5) * MapDepth * 0.15
 
-	local OffsetX = (math.random() - 0.5) * CellWidth * 0.6
-	local OffsetZ = (math.random() - 0.5) * CellDepth * 0.6
-
-	return BaseX + OffsetX, BaseZ + OffsetZ
+	return Vector3.new(
+		MapCenterX + OffsetX + JitterX,
+		0,
+		MapCenterZ + OffsetZ + JitterZ
+	)
 end
 
 local function CreateFrontInstance(Front: FrontData): Configuration
@@ -173,19 +142,19 @@ local function CreateFrontInstance(Front: FrontData): Configuration
 	Config.Name = Front.Id
 
 	Config:SetAttribute("Type", Front.Type)
-	Config:SetAttribute("PointAX", Front.PointA.X)
-	Config:SetAttribute("PointAY", Front.PointA.Y)
-	Config:SetAttribute("PointAZ", Front.PointA.Z)
-	Config:SetAttribute("PointBX", Front.PointB.X)
-	Config:SetAttribute("PointBY", Front.PointB.Y)
-	Config:SetAttribute("PointBZ", Front.PointB.Z)
-	Config:SetAttribute("Width", Front.Width)
+	Config:SetAttribute("CenterX", Front.Center.X)
+	Config:SetAttribute("CenterY", Front.Center.Y)
+	Config:SetAttribute("CenterZ", Front.Center.Z)
+	Config:SetAttribute("RadiusX", Front.RadiusX)
+	Config:SetAttribute("RadiusZ", Front.RadiusZ)
+	Config:SetAttribute("Rotation", Front.Rotation)
 	Config:SetAttribute("VelocityX", Front.Velocity.X)
 	Config:SetAttribute("VelocityY", Front.Velocity.Y)
 	Config:SetAttribute("VelocityZ", Front.Velocity.Z)
 	Config:SetAttribute("Intensity", Front.Intensity)
 	Config:SetAttribute("Age", Front.Age)
 	Config:SetAttribute("Lifespan", Front.Lifespan)
+	Config:SetAttribute("NoiseSeed", Front.NoiseSeed)
 
 	if FrontsFolder then
 		Config.Parent = FrontsFolder
@@ -200,12 +169,9 @@ local function UpdateFrontInstance(Front: FrontData)
 		return
 	end
 
-	Config:SetAttribute("PointAX", Front.PointA.X)
-	Config:SetAttribute("PointAY", Front.PointA.Y)
-	Config:SetAttribute("PointAZ", Front.PointA.Z)
-	Config:SetAttribute("PointBX", Front.PointB.X)
-	Config:SetAttribute("PointBY", Front.PointB.Y)
-	Config:SetAttribute("PointBZ", Front.PointB.Z)
+	Config:SetAttribute("CenterX", Front.Center.X)
+	Config:SetAttribute("CenterY", Front.Center.Y)
+	Config:SetAttribute("CenterZ", Front.Center.Z)
 	Config:SetAttribute("VelocityX", Front.Velocity.X)
 	Config:SetAttribute("VelocityY", Front.Velocity.Y)
 	Config:SetAttribute("VelocityZ", Front.Velocity.Z)
@@ -215,33 +181,51 @@ end
 local function IsFrontOutOfBounds(Front: FrontData): boolean
 	local BoundsMin, BoundsMax = GetBounds()
 	local Config = WeatherConfig.Fronts
-	local Buffer = Config.DespawnBuffer * 1.5
+	local Buffer = Config.DespawnBuffer
 
-	local CenterX = (Front.PointA.X + Front.PointB.X) / 2
-	local CenterZ = (Front.PointA.Z + Front.PointB.Z) / 2
+	local MaxRadius = math.max(Front.RadiusX, Front.RadiusZ)
 
-	return CenterX < BoundsMin.X - Buffer
-		or CenterX > BoundsMax.X + Buffer
-		or CenterZ < BoundsMin.Z - Buffer
-		or CenterZ > BoundsMax.Z + Buffer
+	return Front.Center.X < BoundsMin.X - Buffer - MaxRadius
+		or Front.Center.X > BoundsMax.X + Buffer + MaxRadius
+		or Front.Center.Z < BoundsMin.Z - Buffer - MaxRadius
+		or Front.Center.Z > BoundsMax.Z + Buffer + MaxRadius
 end
 
-local function SpawnFront(SpawnX: number, SpawnZ: number, InitialAge: number?): FrontData?
+local function CheckFrontOverlap(NewCenter: Vector3, NewRadiusX: number, NewRadiusZ: number): boolean
+	local MinSeparation = 200
+
+	for _, Existing in pairs(ActiveFronts) do
+		local Distance = (NewCenter - Existing.Center).Magnitude
+		local CombinedRadius = math.max(NewRadiusX, NewRadiusZ) + math.max(Existing.RadiusX, Existing.RadiusZ)
+
+		if Distance < CombinedRadius * 0.4 + MinSeparation then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function SpawnFront(SpawnPosition: Vector3, InitialAge: number?, ForcedType: string?): FrontData?
 	local Config = WeatherConfig.Fronts
 
 	if GetActiveFrontCount() >= Config.MaxActiveFronts then
 		return nil
 	end
 
-	local FrontType = WeatherFronts.SelectRandomFrontType()
+	local FrontType = ForcedType or WeatherFronts.SelectRandomFrontType()
 	local TypeConfig = WeatherFronts.Types[FrontType]
 	if not TypeConfig then
 		return nil
 	end
 
-	local PointA, PointB = CreateFrontPoints(SpawnX, SpawnZ)
+	local RadiusX = TypeConfig.MinRadiusX + math.random() * (TypeConfig.MaxRadiusX - TypeConfig.MinRadiusX)
+	local RadiusZ = TypeConfig.MinRadiusZ + math.random() * (TypeConfig.MaxRadiusZ - TypeConfig.MinRadiusZ)
 
-	local Width = TypeConfig.MinWidth + math.random() * (TypeConfig.MaxWidth - TypeConfig.MinWidth)
+	if not IsInitializing and CheckFrontOverlap(SpawnPosition, RadiusX, RadiusZ) then
+		return nil
+	end
+
 	local Lifespan = TypeConfig.MinLifespan + math.random() * (TypeConfig.MaxLifespan - TypeConfig.MinLifespan)
 	local Intensity = TypeConfig.MinIntensity + math.random() * (TypeConfig.MaxIntensity - TypeConfig.MinIntensity)
 
@@ -249,17 +233,20 @@ local function SpawnFront(SpawnX: number, SpawnZ: number, InitialAge: number?): 
 	local Velocity = WindDirection * Speed
 
 	local Age = InitialAge or 0
+	local Rotation = (math.random() - 0.5) * math.pi * 0.4
 
 	local Front: FrontData = {
 		Id = GenerateId(),
 		Type = FrontType,
-		PointA = PointA,
-		PointB = PointB,
-		Width = Width,
+		Center = SpawnPosition,
+		RadiusX = RadiusX,
+		RadiusZ = RadiusZ,
+		Rotation = Rotation,
 		Velocity = Velocity,
 		Intensity = Intensity,
 		Age = Age,
 		Lifespan = Lifespan,
+		NoiseSeed = math.random(1, 100000),
 		Instance = nil,
 	}
 
@@ -270,8 +257,8 @@ local function SpawnFront(SpawnX: number, SpawnZ: number, InitialAge: number?): 
 end
 
 local function SpawnEdgeFront(): FrontData?
-	local SpawnX, SpawnZ = GetEdgeSpawnPosition()
-	return SpawnFront(SpawnX, SpawnZ, 0)
+	local SpawnPos = GetEdgeSpawnPosition()
+	return SpawnFront(SpawnPos, 0)
 end
 
 local function DestroyFront(FrontId: string)
@@ -299,8 +286,7 @@ local function UpdateFront(Front: FrontData, DeltaTime: number): boolean
 	Front.Velocity = WindDirection * Speed
 
 	local Movement = Front.Velocity * DeltaTime
-	Front.PointA = Front.PointA + Movement
-	Front.PointB = Front.PointB + Movement
+	Front.Center = Front.Center + Movement
 
 	if IsFrontOutOfBounds(Front) then
 		return false
@@ -310,7 +296,12 @@ local function UpdateFront(Front: FrontData, DeltaTime: number): boolean
 	return true
 end
 
-local function MaintainFrontPopulation()
+local function CalculateNextSpawnInterval(): number
+	local Config = WeatherConfig.Fronts
+	return Config.SpawnIntervalMin + math.random() * (Config.SpawnIntervalMax - Config.SpawnIntervalMin)
+end
+
+local function MaintainFrontPopulation(TimeElapsed: number)
 	local Config = WeatherConfig.Fronts
 
 	if not Config.Enabled then
@@ -318,10 +309,25 @@ local function MaintainFrontPopulation()
 	end
 
 	local CurrentCount = GetActiveFrontCount()
-	local TargetCount = Config.MaxActiveFronts
 
-	if CurrentCount < TargetCount then
+	if CurrentCount < Config.MinActiveFronts then
 		SpawnEdgeFront()
+		LastSpawnTime = TimeElapsed
+		NextSpawnInterval = CalculateNextSpawnInterval()
+		return
+	end
+
+	if CurrentCount >= Config.MaxActiveFronts then
+		return
+	end
+
+	if TimeElapsed - LastSpawnTime >= NextSpawnInterval then
+		local SpawnChance = 0.6 + (Config.MaxActiveFronts - CurrentCount) * 0.1
+		if math.random() < SpawnChance then
+			SpawnEdgeFront()
+		end
+		LastSpawnTime = TimeElapsed
+		NextSpawnInterval = CalculateNextSpawnInterval()
 	end
 end
 
@@ -334,18 +340,44 @@ function FrontManager.Initialize()
 	UpdateWind(0)
 
 	local Config = WeatherConfig.Fronts
-	local InitialCount = Config.MaxActiveFronts
+	local InitialCount = Config.InitialFrontCount
+
+	local TypeWeights: { { Type: string, Weight: number } } = {}
+	for TypeName, TypeConfig in pairs(WeatherFronts.Types) do
+		table.insert(TypeWeights, { Type = TypeName, Weight = TypeConfig.SpawnWeight })
+	end
+
+	IsInitializing = true
 
 	for Index = 1, InitialCount do
-		local SpawnX, SpawnZ = GetDistributedMapPosition(Index, InitialCount)
+		local SpawnPos = GetDistributedMapPosition(Index, InitialCount)
 
-		local FrontType = WeatherFronts.SelectRandomFrontType()
-		local TypeConfig = WeatherFronts.Types[FrontType]
-		local MaxAge = TypeConfig and TypeConfig.MinLifespan * 0.5 or 150
+		local SelectedType: string? = nil
+		local TotalWeight = 0
+		for _, Entry in ipairs(TypeWeights) do
+			TotalWeight = TotalWeight + Entry.Weight
+		end
+		local Roll = math.random() * TotalWeight
+		local Accumulated = 0
+		for _, Entry in ipairs(TypeWeights) do
+			Accumulated = Accumulated + Entry.Weight
+			if Roll <= Accumulated then
+				SelectedType = Entry.Type
+				break
+			end
+		end
+
+		local TypeConfig = WeatherFronts.Types[SelectedType or "Rain"]
+		local MaxAge = TypeConfig and TypeConfig.MinLifespan * 0.6 or 200
 		local InitialAge = math.random() * MaxAge
 
-		SpawnFront(SpawnX, SpawnZ, InitialAge)
+		SpawnFront(SpawnPos, InitialAge, SelectedType)
 	end
+
+	IsInitializing = false
+
+	LastSpawnTime = 0
+	NextSpawnInterval = CalculateNextSpawnInterval()
 end
 
 function FrontManager.Update(DeltaTime: number)
@@ -367,7 +399,7 @@ function FrontManager.Update(DeltaTime: number)
 		DestroyFront(FrontId)
 	end
 
-	MaintainFrontPopulation()
+	MaintainFrontPopulation(TimeElapsed)
 end
 
 function FrontManager.GetActiveFronts(): { [string]: FrontData }
@@ -376,22 +408,52 @@ end
 
 function FrontManager.GetFrontAtPosition(Position: Vector3): FrontData?
 	local StrongestFront: FrontData? = nil
-	local StrongestIntensity = 0
+	local HighestDepth = 0
 
 	for _, Front in pairs(ActiveFronts) do
-		if WeatherFronts.IsInsideFront(Position, Front.PointA, Front.PointB, Front.Width) then
-			local Distance = WeatherFronts.GetDistanceToFront(Position, Front.PointA, Front.PointB)
-			local NormalizedDist = Distance / (Front.Width / 2)
-			local EffectiveIntensity = Front.Intensity * (1 - NormalizedDist * 0.25)
+		local Depth = WeatherFronts.GetNormalizedDepth(
+			Position,
+			Front.Center,
+			Front.RadiusX,
+			Front.RadiusZ,
+			Front.Rotation
+		)
 
-			if EffectiveIntensity > StrongestIntensity then
-				StrongestIntensity = EffectiveIntensity
+		if Depth > 0 then
+			local EffectiveDepth = Depth * Front.Intensity
+
+			if EffectiveDepth > HighestDepth then
+				HighestDepth = EffectiveDepth
 				StrongestFront = Front
 			end
 		end
 	end
 
 	return StrongestFront
+end
+
+function FrontManager.GetFrontsAffectingPosition(Position: Vector3): { { Front: FrontData, Depth: number } }
+	local AffectingFronts: { { Front: FrontData, Depth: number } } = {}
+
+	for _, Front in pairs(ActiveFronts) do
+		local Depth = WeatherFronts.GetNormalizedDepth(
+			Position,
+			Front.Center,
+			Front.RadiusX,
+			Front.RadiusZ,
+			Front.Rotation
+		)
+
+		if Depth > 0 then
+			table.insert(AffectingFronts, { Front = Front, Depth = Depth })
+		end
+	end
+
+	table.sort(AffectingFronts, function(EntryA, EntryB)
+		return EntryA.Depth > EntryB.Depth
+	end)
+
+	return AffectingFronts
 end
 
 function FrontManager.GetWindDirection(): Vector3
