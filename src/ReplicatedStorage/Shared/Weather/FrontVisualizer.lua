@@ -136,8 +136,25 @@ local function GenerateCloudsForFront(Visual: VisualFront)
 	local CloudCount = Formation.MinClouds + math.random() * (Formation.MaxClouds - Formation.MinClouds)
 	CloudCount = math.floor(CloudCount)
 
+	local PlacedPositions: { { X: number, Y: number, Z: number, Radius: number } } = {}
+
+	local function CheckOverlap(X: number, Y: number, Z: number, Radius: number): boolean
+		local MinSeparation = 0.6
+		for _, Placed in ipairs(PlacedPositions) do
+			local DeltaX = X - Placed.X
+			local DeltaY = Y - Placed.Y
+			local DeltaZ = Z - Placed.Z
+			local Distance = math.sqrt(DeltaX * DeltaX + DeltaY * DeltaY + DeltaZ * DeltaZ)
+			local RequiredDistance = (Radius + Placed.Radius) * MinSeparation
+			if Distance < RequiredDistance then
+				return true
+			end
+		end
+		return false
+	end
+
 	local GeneratedCount = 0
-	local MaxAttempts = CloudCount * 4
+	local MaxAttempts = CloudCount * 6
 
 	for Attempt = 1, MaxAttempts do
 		if GeneratedCount >= CloudCount then
@@ -248,6 +265,20 @@ local function GenerateCloudsForFront(Visual: VisualFront)
 
 		local WorldPosition = Visual.Center
 			+ Vector3.new(LocalOffsetX, Height, LocalOffsetZ)
+
+		local AverageRadius = (BaseScale.X + BaseScale.Z) / 4
+
+		if CheckOverlap(WorldPosition.X, WorldPosition.Y, WorldPosition.Z, AverageRadius) then
+			Cloud:Destroy()
+			continue
+		end
+
+		table.insert(PlacedPositions, {
+			X = WorldPosition.X,
+			Y = WorldPosition.Y,
+			Z = WorldPosition.Z,
+			Radius = AverageRadius,
+		})
 
 		Cloud.Size = BaseScale
 		Cloud.Position = WorldPosition
