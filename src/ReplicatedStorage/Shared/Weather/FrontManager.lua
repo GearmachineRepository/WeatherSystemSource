@@ -30,8 +30,6 @@ local WindDirection = Vector3.new(1, 0, 0.3).Unit
 local WindSpeed = 12
 local WindSeed = math.random(1, 10000)
 
-local LastSpawnTime = 0
-local NextSpawnInterval = 0
 local StartTime = 0
 
 local function GenerateId(): string
@@ -43,13 +41,21 @@ local function GetBounds(): (Vector3, Vector3)
 	return Config.MapBoundsMin, Config.MapBoundsMax
 end
 
+local function GetActiveFrontCount(): number
+	local Count = 0
+	for _ in pairs(ActiveFronts) do
+		Count = Count + 1
+	end
+	return Count
+end
+
 local function UpdateWind(TimeElapsed: number)
 	local Config = WeatherConfig.Wind
 
-	local NoiseX = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.25, 0, WindSeed)
-	local NoiseZ = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.25, 100, WindSeed)
+	local NoiseX = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.2, 0, WindSeed)
+	local NoiseZ = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.2, 100, WindSeed)
 
-	local Variance = Config.DirectionVariance * 0.3
+	local Variance = Config.DirectionVariance * 0.25
 	local Direction = Vector3.new(
 		Config.BaseDirection.X + NoiseX * Variance,
 		0,
@@ -60,9 +66,9 @@ local function UpdateWind(TimeElapsed: number)
 		WindDirection = Direction.Unit
 	end
 
-	local SpeedNoise = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.4, 200, WindSeed)
-	WindSpeed = 10 + SpeedNoise * 6
-	WindSpeed = math.clamp(WindSpeed, 6, 20)
+	local SpeedNoise = math.noise(TimeElapsed * Config.NoiseTimeScale * 0.35, 200, WindSeed)
+	WindSpeed = 10 + SpeedNoise * 5
+	WindSpeed = math.clamp(WindSpeed, 7, 18)
 end
 
 local function GetFrontPerpendicular(): Vector3
@@ -82,9 +88,9 @@ local function GetFrontLength(): number
 	local AbsZ = math.abs(WindDirection.Z)
 
 	if AbsX >= AbsZ then
-		return (BoundsMax.Z - BoundsMin.Z) * (1.1 + math.random() * 0.3)
+		return (BoundsMax.Z - BoundsMin.Z) * (1.0 + math.random() * 0.4)
 	else
-		return (BoundsMax.X - BoundsMin.X) * (1.1 + math.random() * 0.3)
+		return (BoundsMax.X - BoundsMin.X) * (1.0 + math.random() * 0.4)
 	end
 end
 
@@ -92,7 +98,7 @@ local function CreateFrontPoints(CenterX: number, CenterZ: number): (Vector3, Ve
 	local Perpendicular = GetFrontPerpendicular()
 	local FrontLength = GetFrontLength()
 
-	local AngleVariance = (math.random() - 0.5) * 0.25
+	local AngleVariance = (math.random() - 0.5) * 0.3
 	local RotatedPerp = Vector3.new(
 		Perpendicular.X * math.cos(AngleVariance) - Perpendicular.Z * math.sin(AngleVariance),
 		0,
@@ -128,26 +134,38 @@ local function GetEdgeSpawnPosition(): (number, number)
 		else
 			SpawnX = BoundsMax.X + Buffer
 		end
-		SpawnZ = MapCenterZ + (math.random() - 0.5) * MapDepth * 0.5
+		SpawnZ = MapCenterZ + (math.random() - 0.5) * MapDepth * 0.6
 	else
 		if WindDirection.Z > 0 then
 			SpawnZ = BoundsMin.Z - Buffer
 		else
 			SpawnZ = BoundsMax.Z + Buffer
 		end
-		SpawnX = MapCenterX + (math.random() - 0.5) * MapWidth * 0.5
+		SpawnX = MapCenterX + (math.random() - 0.5) * MapWidth * 0.6
 	end
 
 	return SpawnX, SpawnZ
 end
 
-local function GetRandomMapPosition(): (number, number)
+local function GetDistributedMapPosition(Index: number, TotalCount: number): (number, number)
 	local BoundsMin, BoundsMax = GetBounds()
+	local MapWidth = BoundsMax.X - BoundsMin.X
+	local MapDepth = BoundsMax.Z - BoundsMin.Z
 
-	local SpawnX = BoundsMin.X + math.random() * (BoundsMax.X - BoundsMin.X)
-	local SpawnZ = BoundsMin.Z + math.random() * (BoundsMax.Z - BoundsMin.Z)
+	local GridSize = math.ceil(math.sqrt(TotalCount))
+	local GridX = (Index - 1) % GridSize
+	local GridZ = math.floor((Index - 1) / GridSize)
 
-	return SpawnX, SpawnZ
+	local CellWidth = MapWidth / GridSize
+	local CellDepth = MapDepth / GridSize
+
+	local BaseX = BoundsMin.X + CellWidth * (GridX + 0.5)
+	local BaseZ = BoundsMin.Z + CellDepth * (GridZ + 0.5)
+
+	local OffsetX = (math.random() - 0.5) * CellWidth * 0.6
+	local OffsetZ = (math.random() - 0.5) * CellDepth * 0.6
+
+	return BaseX + OffsetX, BaseZ + OffsetZ
 end
 
 local function CreateFrontInstance(Front: FrontData): Configuration
@@ -211,12 +229,7 @@ end
 local function SpawnFront(SpawnX: number, SpawnZ: number, InitialAge: number?): FrontData?
 	local Config = WeatherConfig.Fronts
 
-	local ActiveCount = 0
-	for _ in pairs(ActiveFronts) do
-		ActiveCount = ActiveCount + 1
-	end
-
-	if ActiveCount >= Config.MaxActiveFronts then
+	if GetActiveFrontCount() >= Config.MaxActiveFronts then
 		return nil
 	end
 
@@ -261,14 +274,6 @@ local function SpawnEdgeFront(): FrontData?
 	return SpawnFront(SpawnX, SpawnZ, 0)
 end
 
-local function SpawnInitialFront(): FrontData?
-	local SpawnX, SpawnZ = GetRandomMapPosition()
-	local TypeConfig = WeatherFronts.Types[WeatherFronts.SelectRandomFrontType()]
-	local MaxAge = TypeConfig and TypeConfig.MinLifespan * 0.3 or 100
-	local InitialAge = math.random() * MaxAge
-	return SpawnFront(SpawnX, SpawnZ, InitialAge)
-end
-
 local function DestroyFront(FrontId: string)
 	local Front = ActiveFronts[FrontId]
 	if not Front then
@@ -305,6 +310,21 @@ local function UpdateFront(Front: FrontData, DeltaTime: number): boolean
 	return true
 end
 
+local function MaintainFrontPopulation()
+	local Config = WeatherConfig.Fronts
+
+	if not Config.Enabled then
+		return
+	end
+
+	local CurrentCount = GetActiveFrontCount()
+	local TargetCount = Config.MaxActiveFronts
+
+	if CurrentCount < TargetCount then
+		SpawnEdgeFront()
+	end
+end
+
 function FrontManager.Initialize()
 	FrontsFolder = Instance.new("Folder")
 	FrontsFolder.Name = "WeatherFronts"
@@ -314,15 +334,18 @@ function FrontManager.Initialize()
 	UpdateWind(0)
 
 	local Config = WeatherConfig.Fronts
-	local InitialCount = math.random(2, math.min(4, Config.MaxActiveFronts))
+	local InitialCount = Config.MaxActiveFronts
 
 	for Index = 1, InitialCount do
-		SpawnInitialFront()
-	end
+		local SpawnX, SpawnZ = GetDistributedMapPosition(Index, InitialCount)
 
-	local SpawnRange = Config.SpawnIntervalMax - Config.SpawnIntervalMin
-	NextSpawnInterval = Config.SpawnIntervalMin + math.random() * SpawnRange * 0.5
-	LastSpawnTime = os.clock()
+		local FrontType = WeatherFronts.SelectRandomFrontType()
+		local TypeConfig = WeatherFronts.Types[FrontType]
+		local MaxAge = TypeConfig and TypeConfig.MinLifespan * 0.5 or 150
+		local InitialAge = math.random() * MaxAge
+
+		SpawnFront(SpawnX, SpawnZ, InitialAge)
+	end
 end
 
 function FrontManager.Update(DeltaTime: number)
@@ -344,12 +367,7 @@ function FrontManager.Update(DeltaTime: number)
 		DestroyFront(FrontId)
 	end
 
-	local Config = WeatherConfig.Fronts
-	if Config.Enabled and CurrentTime - LastSpawnTime >= NextSpawnInterval then
-		SpawnEdgeFront()
-		LastSpawnTime = CurrentTime
-		NextSpawnInterval = Config.SpawnIntervalMin + math.random() * (Config.SpawnIntervalMax - Config.SpawnIntervalMin)
-	end
+	MaintainFrontPopulation()
 end
 
 function FrontManager.GetActiveFronts(): { [string]: FrontData }

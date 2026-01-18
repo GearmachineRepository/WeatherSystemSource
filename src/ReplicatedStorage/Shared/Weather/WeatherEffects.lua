@@ -5,13 +5,29 @@ export type LightningConfig = {
 	IntervalMin: number,
 	IntervalMax: number,
 	FlashBrightness: number,
+	FlashBrightnessMultiplier: number,
+	FlashExposureAdd: number,
 	FlashDuration: number,
+	FlashFadeTime: number,
 	ThunderDelayMin: number,
 	ThunderDelayMax: number,
 	BoltDuration: number,
 	StrikeHeightMin: number,
 	StrikeHeightMax: number,
 	StrikeRadius: number,
+	MinimumStrikeDistance: number,
+	PreferDistantStrikes: boolean,
+	FarStrikeChance: number,
+	FarStrikeRadiusMultiplier: number,
+	FarStrikeHeightMultiplier: number,
+	BranchCountMin: number,
+	BranchCountMax: number,
+	CloseThunderEnabled: boolean,
+	CloseThunderRadius: number,
+	CloseThunderDelayMin: number,
+	CloseThunderDelayMax: number,
+	CloseThunderVolumeMultiplier: number,
+	FarThunderVolumeMultiplier: number,
 }
 
 export type NightMultiplierConfig = {
@@ -26,38 +42,60 @@ export type ParticleConfig = {
 	Rate: number?,
 }
 
-export type WeatherStateEffects = {
-	Clouds: {
-		Cover: number,
-		Density: number,
-		Color: Color3,
-	},
-	Atmosphere: {
-		Density: number,
-		Offset: number,
-		Color: Color3,
-		Decay: Color3,
-		Glare: number,
-		Haze: number,
-	},
-	Lighting: {
-		Ambient: Color3,
-		Brightness: number,
-		ExposureCompensation: number,
-	},
-	Particles: {
-		Rain: ParticleConfig,
-		Snow: ParticleConfig,
-	},
-	Sounds: {
-		Rain: { Volume: number },
-		Thunder: { Volume: number },
-		WindBreeze: { Volume: number },
-		WindGusty: { Volume: number },
-	},
+export type SkyConfig = {
+	SunAngularSize: number,
+	MoonAngularSize: number,
 }
 
-export type WeatherEffects = {
+export type CloudConfig = {
+	Cover: number,
+	Density: number,
+	Color: Color3,
+}
+
+export type AtmosphereConfig = {
+	Density: number,
+	Offset: number,
+	Color: Color3,
+	Decay: Color3,
+	Glare: number,
+	Haze: number,
+}
+
+export type LightingConfig = {
+	Ambient: Color3,
+	Brightness: number,
+	ExposureCompensation: number,
+}
+
+export type ParticlesConfig = {
+	Rain: ParticleConfig,
+	Snow: ParticleConfig,
+}
+
+export type SoundsConfig = {
+	Rain: { Volume: number },
+	Thunder: { Volume: number },
+	WindBreeze: { Volume: number },
+	WindGusty: { Volume: number },
+}
+
+export type WindConfig = {
+	SpeedMin: number,
+	SpeedMax: number,
+}
+
+export type WeatherStateEffects = {
+	Sky: SkyConfig,
+	Clouds: CloudConfig,
+	Atmosphere: AtmosphereConfig,
+	Lighting: LightingConfig,
+	Particles: ParticlesConfig,
+	Sounds: SoundsConfig,
+	Wind: WindConfig,
+}
+
+export type WeatherEffectsType = {
 	TRANSITION_TIME: number,
 	ZONE_CHANGE_TIME: number,
 	Lightning: LightningConfig,
@@ -65,7 +103,7 @@ export type WeatherEffects = {
 	States: { [string]: WeatherStateEffects },
 }
 
-local WeatherEffects: WeatherEffects = {
+local WeatherEffects: WeatherEffectsType = {
 	TRANSITION_TIME = 15,
 	ZONE_CHANGE_TIME = 8,
 
@@ -73,31 +111,24 @@ local WeatherEffects: WeatherEffects = {
 		Enabled = true,
 		IntervalMin = 8,
 		IntervalMax = 25,
-
 		StrikeHeightMin = 180,
 		StrikeHeightMax = 500,
 		StrikeRadius = 1000,
-
 		MinimumStrikeDistance = 300,
 		PreferDistantStrikes = true,
 		FarStrikeChance = 0.75,
 		FarStrikeRadiusMultiplier = 3,
 		FarStrikeHeightMultiplier = 2,
-
 		BoltDuration = 0.4,
-
 		BranchCountMin = 2,
 		BranchCountMax = 6,
-
 		FlashBrightness = 4.5,
 		FlashBrightnessMultiplier = 2.0,
 		FlashExposureAdd = 2.2,
 		FlashDuration = 0.12,
 		FlashFadeTime = 0.15,
-
 		ThunderDelayMin = 0.3,
 		ThunderDelayMax = 2.5,
-		
 		CloseThunderEnabled = true,
 		CloseThunderRadius = 450,
 		CloseThunderDelayMin = 0.05,

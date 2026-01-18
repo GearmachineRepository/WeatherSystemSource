@@ -15,7 +15,7 @@ local WeatherAssets = ReplicatedStorage:WaitForChild("WeatherAssets")
 local ParticlesFolder = WeatherAssets:WaitForChild("Particles")
 local SoundsFolder = WeatherAssets:WaitForChild("Sounds")
 
-local LightningBolt = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("LightningBolt"))
+local LightningBolt = require(Shared:WaitForChild("Modules"):WaitForChild("LightningBolt"))
 
 local LocalPlayer = Players.LocalPlayer :: Player
 local ZonesFolder = workspace:WaitForChild("Zones")

@@ -22,8 +22,10 @@ local Camera = Workspace.CurrentCamera
 type CloudData = {
 	Mesh: MeshPart,
 	FrontId: string,
-	Zone: string,
 	BaseColor: Color3,
+	RelativeX: number,
+	RelativeZ: number,
+	Height: number,
 }
 
 type VisualFront = {
@@ -37,6 +39,9 @@ type VisualFront = {
 	Clouds: { CloudData },
 	LightningTimer: number,
 	NextLightningTime: number,
+	FrontCenter: Vector3,
+	FrontDirection: Vector3,
+	MoveDirection: Vector3,
 }
 
 local FrontsFolder: Folder? = nil
@@ -44,14 +49,12 @@ local ActiveVisuals: { [string]: VisualFront } = {}
 local DistantThunderSounds: { Sound } = {}
 
 local CloudTemplateCache: { [string]: { MeshPart } } = {}
+local CloudContainer: Folder? = nil
 
 local IsInsideFront = false
 local CurrentFrontId: string? = nil
 
-local CLOUDS_PER_FRONT = 12
-local CLOUD_LAYER_SPACING = 150
-local CLOUD_SIZE_MULTIPLIER = 2.5
-local ROTATION_VARIANCE = 8
+local CLOUD_SCALE_MULTIPLIER = 2.0
 
 local function LoadCloudTemplates(FolderName: string): { MeshPart }
 	if CloudTemplateCache[FolderName] then
@@ -90,20 +93,43 @@ local function CreateCloudMesh(Template: MeshPart): MeshPart
 	Cloud.CanCollide = false
 	Cloud.CanQuery = false
 	Cloud.CanTouch = false
-	Cloud.CastShadow = false
+	Cloud.CastShadow = true
 	return Cloud
 end
 
 local function GetFrontDirection(PointA: Vector3, PointB: Vector3): Vector3
 	local Dir = PointB - PointA
 	if Dir.Magnitude < 0.001 then
-		return Vector3.new(1, 0, 0)
+		return Vector3.new(0, 0, 1)
 	end
 	return Dir.Unit
 end
 
-local function GetFrontCenter(PointA: Vector3, PointB: Vector3): Vector3
-	return (PointA + PointB) / 2
+local function GetMoveDirection(Velocity: Vector3): Vector3
+	if Velocity.Magnitude < 0.001 then
+		return Vector3.new(1, 0, 0)
+	end
+	return Velocity.Unit
+end
+
+local function ApplyGrayNoise(BaseColor: Color3, Variance: number): Color3
+	local Noise = (math.random() - 0.5) * 2 * Variance
+	return Color3.new(
+		math.clamp(BaseColor.R + Noise, 0, 1),
+		math.clamp(BaseColor.G + Noise, 0, 1),
+		math.clamp(BaseColor.B + Noise, 0, 1)
+	)
+end
+
+local function CalculateCloudColor(
+	TypeConfig: typeof(WeatherFronts.Types.Storm),
+	NormalizedDistFromCenter: number
+): Color3
+	local BlendAlpha = math.clamp(NormalizedDistFromCenter, 0, 1)
+	BlendAlpha = BlendAlpha * BlendAlpha
+
+	local BaseColor = WeatherFronts.LerpColor3(TypeConfig.CoreColor, TypeConfig.EdgeColor, BlendAlpha)
+	return ApplyGrayNoise(BaseColor, TypeConfig.ColorVariance)
 end
 
 local function ReadFrontFromInstance(Config: Configuration): VisualFront?
@@ -112,29 +138,36 @@ local function ReadFrontFromInstance(Config: Configuration): VisualFront?
 		return nil
 	end
 
+	local PointA = Vector3.new(
+		Config:GetAttribute("PointAX") or 0,
+		Config:GetAttribute("PointAY") or 0,
+		Config:GetAttribute("PointAZ") or 0
+	)
+	local PointB = Vector3.new(
+		Config:GetAttribute("PointBX") or 0,
+		Config:GetAttribute("PointBY") or 0,
+		Config:GetAttribute("PointBZ") or 0
+	)
+	local Velocity = Vector3.new(
+		Config:GetAttribute("VelocityX") or 0,
+		Config:GetAttribute("VelocityY") or 0,
+		Config:GetAttribute("VelocityZ") or 0
+	)
+
 	return {
 		Id = Config.Name,
 		Type = FrontType,
-		PointA = Vector3.new(
-			Config:GetAttribute("PointAX") or 0,
-			Config:GetAttribute("PointAY") or 0,
-			Config:GetAttribute("PointAZ") or 0
-		),
-		PointB = Vector3.new(
-			Config:GetAttribute("PointBX") or 0,
-			Config:GetAttribute("PointBY") or 0,
-			Config:GetAttribute("PointBZ") or 0
-		),
+		PointA = PointA,
+		PointB = PointB,
 		Width = Config:GetAttribute("Width") or 400,
-		Velocity = Vector3.new(
-			Config:GetAttribute("VelocityX") or 0,
-			Config:GetAttribute("VelocityY") or 0,
-			Config:GetAttribute("VelocityZ") or 0
-		),
+		Velocity = Velocity,
 		Intensity = Config:GetAttribute("Intensity") or 0.5,
 		Clouds = {},
 		LightningTimer = 0,
 		NextLightningTime = 5 + math.random() * 10,
+		FrontCenter = (PointA + PointB) / 2,
+		FrontDirection = GetFrontDirection(PointA, PointB),
+		MoveDirection = GetMoveDirection(Velocity),
 	}
 end
 
@@ -144,83 +177,78 @@ local function GenerateCloudsForFront(Visual: VisualFront)
 		return
 	end
 
-	local Templates = LoadCloudTemplates(TypeConfig.CloudFolder)
+	local CloudFolderName = "Light"
+	if Visual.Type == "Storm" then
+		CloudFolderName = "Storm"
+	elseif Visual.Type == "Rain" then
+		CloudFolderName = "Rain"
+	end
+
+	local Templates = LoadCloudTemplates(CloudFolderName)
 	if #Templates == 0 then
 		return
 	end
 
-	local FrontDir = GetFrontDirection(Visual.PointA, Visual.PointB)
 	local FrontLength = (Visual.PointB - Visual.PointA).Magnitude
-	local MoveDir = Visual.Velocity.Unit
+	local HalfWidth = Visual.Width / 2
+	local HalfLength = FrontLength / 2
 
-	if MoveDir.Magnitude < 0.001 then
-		MoveDir = Vector3.new(1, 0, 0)
-	end
+	local BaseRotation = math.deg(math.atan2(Visual.MoveDirection.X, Visual.MoveDirection.Z))
+	local CloudCount = TypeConfig.CloudCount
 
-	local BaseRotation = math.deg(math.atan2(MoveDir.X, MoveDir.Z))
-
-	local BaseHeight = TypeConfig.CloudHeight + 150
-	local HeightVariance = TypeConfig.CloudHeightVariance
-	local BaseScale = TypeConfig.CloudScale * CLOUD_SIZE_MULTIPLIER
-	local ScaleVariance = TypeConfig.CloudScaleVariance
-
-	for Index = 1, CLOUDS_PER_FRONT do
+	for _CloudIndex = 1, CloudCount do
 		local Template = Templates[math.random(1, #Templates)]
 		local Cloud = CreateCloudMesh(Template)
 
-		local LinePercent = (Index - 1) / math.max(1, CLOUDS_PER_FRONT - 1)
-		LinePercent = LinePercent + (math.random() - 0.5) * 0.15
+		local RelativeX = (math.random() - 0.5) * 2 * HalfWidth * 0.85
+		local RelativeZ = (math.random() - 0.5) * 2 * HalfLength * 0.9
 
-		local BasePos = Visual.PointA:Lerp(Visual.PointB, math.clamp(LinePercent, 0, 1))
+		local DistFromCenterX = math.abs(RelativeX) / HalfWidth
+		local DistFromCenterZ = math.abs(RelativeZ) / HalfLength
+		local NormalizedDist = math.sqrt(DistFromCenterX^2 + DistFromCenterZ^2) / math.sqrt(2)
 
-		local Zone: string
-		local DepthOffset: number
-		local CloudColor: Color3
+		local Height = TypeConfig.BaseCloudHeight + (math.random() - 0.5) * 2 * TypeConfig.CloudHeightVariance
 
-		local Roll = math.random()
-		if Roll < 0.2 then
-			Zone = "Leading"
-			DepthOffset = -(Visual.Width * 0.4 + math.random() * Visual.Width * 0.3)
-			CloudColor = TypeConfig.LeadingColor
-		elseif Roll < 0.7 then
-			Zone = "Core"
-			DepthOffset = (math.random() - 0.5) * Visual.Width * 0.5
-			CloudColor = TypeConfig.CoreColor
-		else
-			Zone = "Trailing"
-			DepthOffset = Visual.Width * 0.35 + math.random() * Visual.Width * 0.25
-			CloudColor = TypeConfig.TrailingColor
+		if NormalizedDist < 0.3 then
+			Height = Height + 50 + math.random() * 30
 		end
 
-		local LateralOffset = (math.random() - 0.5) * CLOUD_LAYER_SPACING
-		local Height = BaseHeight + (math.random() - 0.5) * 2 * HeightVariance
-
-		local Position = BasePos
-			+ MoveDir * DepthOffset
-			+ FrontDir * LateralOffset
+		local WorldPosition = Visual.FrontCenter
+			+ Visual.MoveDirection * RelativeX
+			+ Visual.FrontDirection * RelativeZ
 			+ Vector3.new(0, Height, 0)
 
-		local ScaleMult = 1 + (math.random() - 0.5) * 2 * ScaleVariance
-		local ScaleX = BaseScale.X * ScaleMult * (0.85 + math.random() * 0.3)
-		local ScaleY = BaseScale.Y * ScaleMult * (0.7 + math.random() * 0.4)
-		local ScaleZ = BaseScale.Z * ScaleMult * (0.85 + math.random() * 0.3)
+		local ScaleVariance = 1 + (math.random() - 0.5) * 2 * TypeConfig.CloudScaleVariance
+		local BaseScale = TypeConfig.BaseCloudScale * CLOUD_SCALE_MULTIPLIER * ScaleVariance
 
-		Cloud.Size = Vector3.new(ScaleX, ScaleY, ScaleZ)
-		Cloud.Position = Position
+		if NormalizedDist < 0.35 then
+			BaseScale = BaseScale * (1.2 + math.random() * 0.3)
+		end
 
-		local CloudRotation = BaseRotation + (math.random() - 0.5) * 2 * ROTATION_VARIANCE
+		Cloud.Size = BaseScale
+		Cloud.Position = WorldPosition
+
+		local CloudRotation = BaseRotation + (math.random() - 0.5) * 30
 		Cloud.Orientation = Vector3.new(0, CloudRotation, 0)
 
+		local CloudColor = CalculateCloudColor(TypeConfig, NormalizedDist)
 		Cloud.Color = CloudColor
 		Cloud.Transparency = 0
 		Cloud.Material = Enum.Material.SmoothPlastic
-		Cloud.Parent = Workspace
+
+		if CloudContainer then
+			Cloud.Parent = CloudContainer
+		else
+			Cloud.Parent = Workspace
+		end
 
 		local CloudInfo: CloudData = {
 			Mesh = Cloud,
 			FrontId = Visual.Id,
-			Zone = Zone,
 			BaseColor = CloudColor,
+			RelativeX = RelativeX,
+			RelativeZ = RelativeZ,
+			Height = Height,
 		}
 
 		table.insert(Visual.Clouds, CloudInfo)
@@ -250,6 +278,7 @@ end
 
 local function UpdateCloudPositions(Visual: VisualFront, DeltaTime: number)
 	local Movement = Visual.Velocity * DeltaTime
+	Visual.FrontCenter = Visual.FrontCenter + Movement
 
 	for _, CloudInfo in ipairs(Visual.Clouds) do
 		CloudInfo.Mesh.Position = CloudInfo.Mesh.Position + Movement
@@ -259,10 +288,6 @@ end
 local function UpdateCloudVisibility(Visual: VisualFront, PlayerPos: Vector3)
 	local Config = WeatherConfig.Fronts
 	local MaxRender = Config.MaxRenderDistance
-
-	local DistanceToFront = WeatherFronts.GetDistanceToFront(PlayerPos, Visual.PointA, Visual.PointB)
-	local HalfWidth = Visual.Width / 2
-	local InsideFront = DistanceToFront <= HalfWidth
 
 	for _, CloudInfo in ipairs(Visual.Clouds) do
 		local CloudPos = CloudInfo.Mesh.Position
@@ -274,18 +299,13 @@ local function UpdateCloudVisibility(Visual: VisualFront, PlayerPos: Vector3)
 		end
 
 		local DistanceFade = 1
-		if CloudDistance > MaxRender * 0.9 then
-			local FadeStart = MaxRender * 0.9
-			DistanceFade = 1 - (CloudDistance - FadeStart) / (MaxRender - FadeStart)
+		local FadeStartDistance = MaxRender * 0.8
+		if CloudDistance > FadeStartDistance then
+			DistanceFade = 1 - (CloudDistance - FadeStartDistance) / (MaxRender - FadeStartDistance)
 		end
 
-		local InsideFade = 1
-		if InsideFront then
-			InsideFade = 0
-		end
-
-		local FinalTransparency = 1 - (DistanceFade * InsideFade)
-		CloudInfo.Mesh.Transparency = math.clamp(FinalTransparency, 0, 1)
+		local FinalTransparency = 1 - DistanceFade
+		CloudInfo.Mesh.Transparency = math.clamp(FinalTransparency, 0, 0.95)
 	end
 end
 
@@ -307,19 +327,28 @@ local function TriggerDistantLightning(Visual: VisualFront, PlayerPos: Vector3)
 		return
 	end
 
-	if Distance < Visual.Width / 2 then
-		return
-	end
+	local FlashCount = math.random(1, math.min(4, #Visual.Clouds))
+	local SelectedIndices: { [number]: boolean } = {}
 
-	for _, CloudInfo in ipairs(Visual.Clouds) do
-		if CloudInfo.Zone == "Core" and math.random() < 0.5 then
+	for _ = 1, FlashCount do
+		local RandomIndex: number
+		local Attempts = 0
+		repeat
+			RandomIndex = math.random(1, #Visual.Clouds)
+			Attempts = Attempts + 1
+		until not SelectedIndices[RandomIndex] or Attempts > 10
+
+		if Attempts <= 10 then
+			SelectedIndices[RandomIndex] = true
+
+			local CloudInfo = Visual.Clouds[RandomIndex]
 			local OrigColor = CloudInfo.Mesh.Color
 			local OrigTransparency = CloudInfo.Mesh.Transparency
 
 			CloudInfo.Mesh.Color = Color3.fromRGB(255, 255, 255)
-			CloudInfo.Mesh.Transparency = math.max(0, OrigTransparency - 0.3)
+			CloudInfo.Mesh.Transparency = math.max(0, OrigTransparency - 0.4)
 
-			task.delay(0.06 + math.random() * 0.04, function()
+			task.delay(0.08 + math.random() * 0.06, function()
 				if CloudInfo.Mesh and CloudInfo.Mesh.Parent then
 					CloudInfo.Mesh.Color = OrigColor
 					CloudInfo.Mesh.Transparency = OrigTransparency
@@ -328,21 +357,23 @@ local function TriggerDistantLightning(Visual: VisualFront, PlayerPos: Vector3)
 		end
 	end
 
-	local FlashStrength = math.clamp(1 - Distance / Config.DistantLightningMaxDistance, 0.05, 0.35)
+	local FlashStrength = math.clamp(1 - Distance / Config.DistantLightningMaxDistance, 0.08, 0.45)
 	local OrigBrightness = Lighting.Brightness
 	Lighting.Brightness = OrigBrightness + FlashStrength
 
-	task.delay(0.08, function()
+	task.delay(0.1, function()
 		Lighting.Brightness = OrigBrightness
 	end)
 
-	if Distance <= Config.DistantThunderMaxDistance and #DistantThunderSounds > 0 then
+	local InsideFront = WeatherFronts.IsInsideFront(PlayerPos, Visual.PointA, Visual.PointB, Visual.Width)
+
+	if not InsideFront and Distance <= Config.DistantThunderMaxDistance and #DistantThunderSounds > 0 then
 		local ThunderDelay = Distance * Config.ThunderDelayPerStud
-		local VolumeScale = math.clamp(1 - Distance / Config.DistantThunderMaxDistance, 0.1, 0.5)
+		local VolumeScale = math.clamp(1 - Distance / Config.DistantThunderMaxDistance, 0.15, 0.6)
 
 		task.delay(ThunderDelay, function()
 			local Sound = DistantThunderSounds[math.random(1, #DistantThunderSounds)]
-			Sound.Volume = VolumeScale * 0.4
+			Sound.Volume = VolumeScale * 0.5
 			Sound:Play()
 		end)
 	end
@@ -354,7 +385,7 @@ local function UpdateFrontLightning(Visual: VisualFront, PlayerPos: Vector3, Del
 	if Visual.LightningTimer >= Visual.NextLightningTime then
 		TriggerDistantLightning(Visual, PlayerPos)
 		Visual.LightningTimer = 0
-		Visual.NextLightningTime = 3 + math.random() * 8
+		Visual.NextLightningTime = 4 + math.random() * 12
 	end
 end
 
@@ -376,6 +407,9 @@ local function SyncFrontData(Visual: VisualFront, Config: Configuration)
 		Config:GetAttribute("VelocityY") or Visual.Velocity.Y,
 		Config:GetAttribute("VelocityZ") or Visual.Velocity.Z
 	)
+
+	Visual.MoveDirection = GetMoveDirection(Visual.Velocity)
+	Visual.FrontDirection = GetFrontDirection(Visual.PointA, Visual.PointB)
 end
 
 local function OnFrontAdded(Config: Configuration)
@@ -411,6 +445,10 @@ end
 
 function FrontVisualizer.Initialize()
 	FrontsFolder = ReplicatedStorage:WaitForChild("WeatherFronts", 10)
+
+	CloudContainer = Instance.new("Folder")
+	CloudContainer.Name = "WeatherClouds"
+	CloudContainer.Parent = Workspace
 
 	for _, Child in ipairs(SoundsFolder:GetChildren()) do
 		if Child:IsA("Sound") and Child.Name:find("Thunder") and not Child.Name:find("Close") then
