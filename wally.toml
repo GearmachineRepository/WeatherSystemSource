@@ -1,0 +1,21 @@
+[package]
+name = "steviegoodman/unnamed-project"
+description = "No description provided."
+version = "1.0.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+
+[dependencies]
+Packet = "rajden28/suphi-packet-main@1.7.1"
+Input = "sleitnick/input@3.0.0"
+Loader = "sleitnick/loader@2.0.0"
+Log = "sleitnick/log@0.1.2"
+Shake = "sleitnick/shake@1.1.0"
+Signal = "sleitnick/signal@2.0.3"
+Spring = "sleitnick/spring@1.0.0"
+TableUtil = "sleitnick/table-util@1.2.1"
+Timer = "sleitnick/timer@2.0.0"
+Trove = "sleitnick/trove@1.8.0"
+
+[server-dependencies]
+ProfileStore = "lm-loleris/profilestore@1.0.3"
