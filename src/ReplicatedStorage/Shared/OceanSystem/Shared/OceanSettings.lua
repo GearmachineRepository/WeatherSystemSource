@@ -163,7 +163,7 @@ function OceanSettings:_ApplySettings()
 
 	-- Convert wind direction to Vector2
 	local WindRad = math.rad(WindDeg)
-	local PrimaryDirection = Vector2.new(math.cos(WindRad), math.sin(WindRad))
+	--local PrimaryDirection = Vector2.new(math.cos(WindRad), math.sin(WindRad))
 
 	-- Build scaled wave table
 	local ScaledWaves = {}

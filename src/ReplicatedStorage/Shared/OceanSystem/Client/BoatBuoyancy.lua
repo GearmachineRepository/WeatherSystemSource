@@ -19,7 +19,6 @@
 ]]
 
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local WaveConfig = require(script.Parent.Parent.Shared.WaveConfig)
 

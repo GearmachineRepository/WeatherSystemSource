@@ -7,8 +7,6 @@
     - WaveHeightSampler (to calculate heights for boats)
 ]]
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
 local WaveConfig = require(script.Parent.WaveConfig)
 
 local GerstnerWave = {}

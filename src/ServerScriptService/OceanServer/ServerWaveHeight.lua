@@ -14,11 +14,9 @@
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 
 -- Wait for modules
-local OceanSystem = ReplicatedStorage:WaitForChild("OceanSystem")
-local WaveConfig = require(OceanSystem.Shared.WaveConfig)
+local OceanSystem = ReplicatedStorage.Shared:WaitForChild("OceanSystem")
 local GerstnerWave = require(OceanSystem.Shared.GerstnerWave)
 
 local ServerWaveHeight = {}

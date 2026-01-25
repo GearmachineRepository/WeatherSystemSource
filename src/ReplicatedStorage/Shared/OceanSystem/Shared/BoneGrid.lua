@@ -6,8 +6,6 @@
     so it works regardless of how bones are named (1, 2, 3... or Bone_X_Z, etc.)
 ]]
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
 local WaveConfig = require(script.Parent.WaveConfig)
 
 local BoneGrid = {}
@@ -79,7 +77,9 @@ function BoneGrid:_DetectGridLayout()
 	for _, Bone in ipairs(self.Bones) do
 		table.insert(SortedByX, self.OriginalPositions[Bone])
 	end
-	table.sort(SortedByX, function(A, B) return A.X < B.X end)
+	table.sort(SortedByX, function(A, B)
+		return A.X < B.X
+	end)
 
 	-- Find the smallest non-zero X gap (this is likely our grid spacing)
 	local MinGap = math.huge
