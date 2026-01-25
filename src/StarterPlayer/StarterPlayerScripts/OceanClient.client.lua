@@ -13,7 +13,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 -- Wait for modules to load
-local OceanSystem = ReplicatedStorage:WaitForChild("OceanSystem")
+local OceanSystem = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("OceanSystem")
 local OceanController = require(OceanSystem.Client.OceanController)
 local BoatBuoyancy = require(OceanSystem.Client.BoatBuoyancy)
 local OceanSettings = require(OceanSystem.Shared.OceanSettings)
