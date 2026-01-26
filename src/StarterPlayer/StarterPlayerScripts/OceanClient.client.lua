@@ -1,99 +1,92 @@
+--!strict
 --[[
     OceanClient
     Client-side initialization script.
-    Place in: StarterPlayerScripts/OceanClient (as a LocalScript)
 
     This script:
     1. Waits for the ocean mesh to load
-    2. Initializes the OceanController
-    3. Starts the wave animation
+    2. Initializes the OceanController (wave animation)
+    3. Initializes the OceanTexture (animated normal maps)
+    4. Sets up boat buoyancy
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
 
--- Wait for modules to load
 local OceanSystem = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("OceanSystem")
 local OceanController = require(OceanSystem.Client.OceanController)
+local OceanTexture = require(OceanSystem.Client.OceanTexture)
 local BoatBuoyancy = require(OceanSystem.Client.BoatBuoyancy)
 local OceanSettings = require(OceanSystem.Shared.OceanSettings)
 local WaveConfig = require(OceanSystem.Shared.WaveConfig)
 
--- Wait for the ocean mesh (workspace/Ocean/Plane)
 local Ocean = workspace:WaitForChild("Ocean", 30)
 if not Ocean then
-	warn("[OceanClient] Ocean folder not found in workspace")
-	return
+    warn("[OceanClient] Ocean folder not found in workspace")
+    return
 end
 
 local OceanMesh = Ocean:WaitForChild("Plane", 10)
 if not OceanMesh then
-	warn("[OceanClient] Plane not found in workspace/Ocean")
-	return
+    warn("[OceanClient] Plane not found in workspace/Ocean")
+    return
 end
 
--- Initialize dynamic ocean settings (reads Attributes from the Plane)
 OceanSettings:Initialize(OceanMesh, WaveConfig)
 
--- Initialize the ocean controller
 local Controller = OceanController.new(OceanMesh)
 Controller:Start()
 
-print("[OceanClient] Ocean waves initialized")
+local TextureController = OceanTexture.new(OceanMesh, {
+    FrameRate = 24,
+    FolderName = "OceanMaterialVariants",
+    DecalFolder = "WaterNormalMaps",
+})
+TextureController:Preload()
+TextureController:Start()
 
--- Get the height sampler for boats
 local HeightSampler = Controller:GetHeightSampler()
 
--- Function to set up buoyancy for a boat
-local function SetupBoat(BoatModel)
-	-- Skip if already set up
-	if BoatModel:GetAttribute("BuoyancyEnabled") then
-		return
-	end
+local function SetupBoat(BoatModel: Model)
+    if BoatModel:GetAttribute("BuoyancyEnabled") then
+        return
+    end
 
-	-- Skip if server is controlling this boat (multiplayer mode)
-	if BoatModel:GetAttribute("ServerControlled") then
-		print("[OceanClient] Skipping boat (server-controlled):", BoatModel.Name)
-		return
-	end
+    if BoatModel:GetAttribute("ServerControlled") then
+        print("[OceanClient] Skipping boat (server-controlled):", BoatModel.Name)
+        return
+    end
 
-	local BuoyancyController = BoatBuoyancy.new(BoatModel, HeightSampler)
-	BuoyancyController:SetHeightOffset(1) -- Float 1 stud above surface
-	BuoyancyController:SetSmoothing(0.1)  -- Smooth movement
-	BuoyancyController:Start()
+    local BuoyancyController = BoatBuoyancy.new(BoatModel, HeightSampler)
+    BuoyancyController:SetHeightOffset(1)
+    BuoyancyController:SetSmoothing(0.1)
+    BuoyancyController:Start()
 
-	BoatModel:SetAttribute("BuoyancyEnabled", true)
-
-	print("[OceanClient] Boat buoyancy enabled for:", BoatModel.Name)
+    BoatModel:SetAttribute("BuoyancyEnabled", true)
 end
 
--- Auto-setup boats tagged with "Boat" in CollectionService
-local CollectionService = game:GetService("CollectionService")
-
 for _, Boat in pairs(CollectionService:GetTagged("Boat")) do
-	SetupBoat(Boat)
+    SetupBoat(Boat)
 end
 
 CollectionService:GetInstanceAddedSignal("Boat"):Connect(function(Boat)
-	SetupBoat(Boat)
+    SetupBoat(Boat :: Model)
 end)
 
--- Also look for boats in a Boats folder
 local BoatsFolder = workspace:FindFirstChild("Boats")
 if BoatsFolder then
-	for _, Boat in pairs(BoatsFolder:GetChildren()) do
-		if Boat:IsA("Model") and Boat.PrimaryPart then
-			SetupBoat(Boat)
-		end
-	end
+    for _, Boat in pairs(BoatsFolder:GetChildren()) do
+        if Boat:IsA("Model") and Boat.PrimaryPart then
+            SetupBoat(Boat)
+        end
+    end
 
-	BoatsFolder.ChildAdded:Connect(function(Boat)
-		if Boat:IsA("Model") then
-			task.wait(0.1) -- Wait for model to fully load
-			if Boat.PrimaryPart then
-				SetupBoat(Boat)
-			end
-		end
-	end)
+    BoatsFolder.ChildAdded:Connect(function(Boat: Model)
+        if Boat:IsA("Model") then
+            task.wait(0.1)
+            if Boat.PrimaryPart then
+                SetupBoat(Boat)
+            end
+        end
+    end)
 end
-
-print("[OceanClient] Ready")

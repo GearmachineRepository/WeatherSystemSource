@@ -130,12 +130,6 @@ function OceanSettings:Initialize(Mesh, Config)
 			self:_ApplySettings()
 		end
 	end)
-
-	print("[OceanSettings] Initialized")
-	print("  Intensity:", CurrentSettings.Intensity)
-	print("  Speed:", CurrentSettings.Speed)
-	print("  WindDirection:", CurrentSettings.WindDirection)
-	print("  Choppiness:", CurrentSettings.Choppiness)
 end
 
 --[[
