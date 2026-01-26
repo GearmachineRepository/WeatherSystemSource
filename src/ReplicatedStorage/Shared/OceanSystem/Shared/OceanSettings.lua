@@ -16,43 +16,37 @@
 
 local OceanSettings = {}
 
--- Default base wave configurations (these get scaled by Intensity)
 OceanSettings.BaseWaves = {
-	-- Primary swell (big, slow waves)
 	{
 		Wavelength = 200,
 		Direction = Vector2.new(1, 0),
-		Steepness = 0.08,
+		Steepness = 0.20,
 		Gravity = 9.8,
 		Layer = "Primary",
 	},
-	-- Secondary swell (medium waves, different angle)
 	{
 		Wavelength = 120,
 		Direction = Vector2.new(0.7, 0.7),
-		Steepness = 0.05,
+		Steepness = 0.14,
 		Gravity = 9.8,
 		Layer = "Secondary",
 	},
-	-- Chop (small, fast waves - scaled by Choppiness)
 	{
 		Wavelength = 40,
 		Direction = Vector2.new(-0.3, 1),
-		Steepness = 0.03,
+		Steepness = 0.08,
 		Gravity = 9.8,
 		Layer = "Chop",
 	},
-	-- Detail (tiny ripples - scaled by Choppiness)
 	{
 		Wavelength = 15,
 		Direction = Vector2.new(0.5, -0.8),
-		Steepness = 0.015,
+		Steepness = 0.04,
 		Gravity = 9.8,
 		Layer = "Chop",
 	},
 }
 
--- Presets for quick settings
 OceanSettings.Presets = {
 	Calm = {
 		Intensity = 0.15,
@@ -76,7 +70,6 @@ OceanSettings.Presets = {
 	},
 }
 
--- Internal state
 local CurrentSettings = {
 	Intensity = 0.5,
 	Speed = 1.0,
@@ -90,19 +83,10 @@ local OnSettingsChanged = Instance.new("BindableEvent")
 
 OceanSettings.Changed = OnSettingsChanged.Event
 
---[[
-    Initialize the settings system.
-    Call this once with your ocean mesh.
-
-    Parameters:
-        Mesh: The ocean Plane with attributes
-        Config: Reference to WaveConfig module
-]]
 function OceanSettings:Initialize(Mesh, Config)
 	OceanMesh = Mesh
 	WaveConfig = Config
 
-	-- Set up default attributes if they don't exist
 	if not Mesh:GetAttribute("Intensity") then
 		Mesh:SetAttribute("Intensity", 0.5)
 	end
@@ -116,11 +100,9 @@ function OceanSettings:Initialize(Mesh, Config)
 		Mesh:SetAttribute("Choppiness", 0.5)
 	end
 
-	-- Read initial values
 	self:_ReadAttributes()
 	self:_ApplySettings()
 
-	-- Listen for attribute changes
 	Mesh.AttributeChanged:Connect(function(AttributeName)
 		if AttributeName == "Intensity" or
 			AttributeName == "Speed" or
@@ -132,9 +114,6 @@ function OceanSettings:Initialize(Mesh, Config)
 	end)
 end
 
---[[
-    Read current attribute values from the mesh.
-]]
 function OceanSettings:_ReadAttributes()
 	if not OceanMesh then return end
 
@@ -144,9 +123,6 @@ function OceanSettings:_ReadAttributes()
 	CurrentSettings.Choppiness = math.clamp(OceanMesh:GetAttribute("Choppiness") or 0.5, 0, 1)
 end
 
---[[
-    Apply current settings to WaveConfig.
-]]
 function OceanSettings:_ApplySettings()
 	if not WaveConfig then return end
 
@@ -155,11 +131,8 @@ function OceanSettings:_ApplySettings()
 	local WindDeg = CurrentSettings.WindDirection
 	local Choppiness = CurrentSettings.Choppiness
 
-	-- Convert wind direction to Vector2
 	local WindRad = math.rad(WindDeg)
-	--local PrimaryDirection = Vector2.new(math.cos(WindRad), math.sin(WindRad))
 
-	-- Build scaled wave table
 	local ScaledWaves = {}
 
 	for _, BaseWave in ipairs(self.BaseWaves) do
@@ -168,41 +141,27 @@ function OceanSettings:_ApplySettings()
 			Gravity = BaseWave.Gravity,
 		}
 
-		-- Scale steepness by intensity (and choppiness for chop layers)
 		local SteepnessMultiplier = Intensity
 		if BaseWave.Layer == "Chop" then
 			SteepnessMultiplier = Intensity * Choppiness
 		end
 		Wave.Steepness = BaseWave.Steepness * SteepnessMultiplier
 
-		-- Rotate direction based on wind
 		local OrigDir = BaseWave.Direction
 		local Angle = math.atan2(OrigDir.Y, OrigDir.X) + WindRad
 		Wave.Direction = Vector2.new(math.cos(Angle), math.sin(Angle))
 
-		-- Only add wave if it has meaningful steepness
 		if Wave.Steepness > 0.001 then
 			table.insert(ScaledWaves, Wave)
 		end
 	end
 
-	-- Apply to WaveConfig
 	WaveConfig.Waves = ScaledWaves
-
-	-- Adjust time modifier (inverse of speed)
-	-- Base TimeModifier is 4, scale inversely with speed
 	WaveConfig.TimeModifier = 4 / Speed
 
-	-- Fire changed event
 	OnSettingsChanged:Fire(CurrentSettings)
 end
 
---[[
-    Set a preset by name.
-
-    Parameters:
-        PresetName: "Calm", "Moderate", "Rough", or "Storm"
-]]
 function OceanSettings:SetPreset(PresetName)
 	local Preset = self.Presets[PresetName]
 	if not Preset then
@@ -219,12 +178,6 @@ function OceanSettings:SetPreset(PresetName)
 	print("[OceanSettings] Applied preset:", PresetName)
 end
 
---[[
-    Set individual values directly.
-
-    Parameters:
-        Settings: Table with any of: Intensity, Speed, WindDirection, Choppiness
-]]
 function OceanSettings:Set(Settings)
 	if not OceanMesh then return end
 
@@ -242,12 +195,6 @@ function OceanSettings:Set(Settings)
 	end
 end
 
---[[
-    Get current settings.
-
-    Returns:
-        Table with Intensity, Speed, WindDirection, Choppiness
-]]
 function OceanSettings:Get()
 	return {
 		Intensity = CurrentSettings.Intensity,
@@ -257,13 +204,6 @@ function OceanSettings:Get()
 	}
 end
 
---[[
-    Smoothly transition to new settings over time.
-
-    Parameters:
-        TargetSettings: Table with target values
-        Duration: Time in seconds
-]]
 function OceanSettings:TweenTo(TargetSettings, Duration)
 	if not OceanMesh then return end
 
@@ -275,10 +215,8 @@ function OceanSettings:TweenTo(TargetSettings, Duration)
 		local Elapsed = tick() - StartTime
 		local Alpha = math.min(Elapsed / Duration, 1)
 
-		-- Smooth easing
-		Alpha = Alpha * Alpha * (3 - 2 * Alpha) -- Smoothstep
+		Alpha = Alpha * Alpha * (3 - 2 * Alpha)
 
-		-- Interpolate each setting
 		if TargetSettings.Intensity then
 			local Value = StartSettings.Intensity + (TargetSettings.Intensity - StartSettings.Intensity) * Alpha
 			OceanMesh:SetAttribute("Intensity", Value)
@@ -292,7 +230,6 @@ function OceanSettings:TweenTo(TargetSettings, Duration)
 			OceanMesh:SetAttribute("Choppiness", Value)
 		end
 		if TargetSettings.WindDirection then
-			-- Handle angle wrapping
 			local Start = StartSettings.WindDirection
 			local Target = TargetSettings.WindDirection
 			local Diff = (Target - Start + 180) % 360 - 180
@@ -308,13 +245,6 @@ function OceanSettings:TweenTo(TargetSettings, Duration)
 	return Connection
 end
 
---[[
-    Smoothly transition to a preset.
-
-    Parameters:
-        PresetName: "Calm", "Moderate", "Rough", or "Storm"
-        Duration: Time in seconds
-]]
 function OceanSettings:TweenToPreset(PresetName, Duration)
 	local Preset = self.Presets[PresetName]
 	if not Preset then
