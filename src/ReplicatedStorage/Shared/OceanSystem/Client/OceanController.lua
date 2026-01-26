@@ -66,7 +66,7 @@ end
 ]]
 function OceanController:_Update()
 	-- Time calculation matching reference script
-	local Time = DateTime.now().UnixTimestampMillis / 1000 / WaveConfig.TimeModifier
+	local Time = workspace:GetServerTimeNow() / WaveConfig.TimeModifier
 
 	local LocalPlayer = Players.LocalPlayer
 	local Character = LocalPlayer and LocalPlayer.Character

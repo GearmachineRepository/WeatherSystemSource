@@ -16,7 +16,7 @@ local GerstnerWave = {}
     Uses the same formula as the reference wave module.
 ]]
 function GerstnerWave.GetSyncedTime()
-	return DateTime.now().UnixTimestampMillis / 1000 / WaveConfig.TimeModifier
+    return workspace:GetServerTimeNow() / WaveConfig.TimeModifier
 end
 
 --[[

@@ -3,7 +3,7 @@ local WaveConfig = {}
 
 WaveConfig.OceanPath = "workspace/Ocean/Plane"
 
-WaveConfig.BaseWaterHeight = 20
+WaveConfig.BaseWaterHeight = 12
 
 WaveConfig.GridSpacing = 10
 
