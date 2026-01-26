@@ -1,46 +1,40 @@
+--!strict
 --[[
     OceanController
     Client-side controller that updates ocean mesh bones.
 
-    Based on the wave module pattern from:
-    https://devforum.roblox.com/t/realistic-oceans-using-mesh-deformation/1159345
+    Uses GerstnerWave module for wave calculations to ensure
+    server and client use identical math.
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local WaveConfig = require(script.Parent.Parent.Shared.WaveConfig)
+local GerstnerWave = require(script.Parent.Parent.Shared.GerstnerWave)
 local WaveHeightSampler = require(script.Parent.Parent.Shared.WaveHeightSampler)
 
 local OceanController = {}
 OceanController.__index = OceanController
 
--- Gerstner wave calculation (matches the reference script exactly)
-local function Gerstner(Position, Wavelength, Direction, Steepness, Gravity, Time)
-	local K = (2 * math.pi) / Wavelength
-	local A = Steepness / K
-	local D = Direction.Unit
-	local C = math.sqrt(Gravity / K)
-	local F = K * D:Dot(Vector2.new(Position.X, Position.Z)) - C * Time
-	local CosF = math.cos(F)
-
-	local DX = D.X * A * CosF
-	local DY = A * math.sin(F)
-	local DZ = D.Y * A * CosF
-
-	return Vector3.new(DX, DY, DZ)
-end
+export type OceanController = {
+	OceanMesh: MeshPart,
+	Bones: {Bone},
+	Running: boolean,
+	Connection: RBXScriptConnection?,
+	HeightSampler: typeof(WaveHeightSampler.new(nil :: any)),
+}
 
 --[[
     Create a new OceanController.
 
     Parameters:
-        OceanMesh: MeshPart/Part - The skinned mesh with bones (workspace.Ocean.Plane)
+        OceanMesh: MeshPart - The skinned mesh with bones (workspace.Ocean.Plane)
 
     Returns:
         OceanController instance
 ]]
-function OceanController.new(OceanMesh)
+function OceanController.new(OceanMesh: MeshPart)
 	local self = setmetatable({}, OceanController)
 
 	self.OceanMesh = OceanMesh
@@ -48,14 +42,12 @@ function OceanController.new(OceanMesh)
 	self.Running = false
 	self.Connection = nil
 
-	-- Collect all bones
 	for _, Child in pairs(OceanMesh:GetDescendants()) do
 		if Child:IsA("Bone") then
 			table.insert(self.Bones, Child)
 		end
 	end
 
-	-- Initialize the wave height sampler
 	self.HeightSampler = WaveHeightSampler.new(OceanMesh)
 
 	return self
@@ -64,39 +56,35 @@ end
 --[[
     Update all bones with wave displacement.
 ]]
-function OceanController:_Update()
-	-- Time calculation matching reference script
-	local Time = workspace:GetServerTimeNow() / WaveConfig.TimeModifier
+function OceanController:_Update(): ()
+	local Time = GerstnerWave.GetSyncedTime()
 
 	local LocalPlayer = Players.LocalPlayer
 	local Character = LocalPlayer and LocalPlayer.Character
 	local MaxDistance = WaveConfig.MaxUpdateDistance
-	local MaxDistanceSq = MaxDistance * MaxDistance
+	local MaxDistanceSquared = MaxDistance * MaxDistance
 
-	-- Get character position for distance check
-	local CharacterPosition = nil
+	local CharacterPosition: Vector3? = nil
 	if Character and Character.PrimaryPart then
 		CharacterPosition = Character.PrimaryPart.Position
 	end
 
-	for _, Bone in pairs(self.Bones) do
-		local WorldPos = Bone.WorldPosition
+	for _, Bone in ipairs(self.Bones) do
+		local WorldPosition = Bone.WorldPosition :: Vector3
 
-		-- Distance check (optional, skip if no character)
 		local ShouldUpdate = true
 		if CharacterPosition then
-			local Delta = WorldPos - CharacterPosition
-			local DistSq = Delta.X * Delta.X + Delta.Z * Delta.Z
-			ShouldUpdate = DistSq < MaxDistanceSq
+			local Delta = WorldPosition - CharacterPosition
+			local DistanceSquared = Delta.X * Delta.X + Delta.Z * Delta.Z
+			ShouldUpdate = DistanceSquared < MaxDistanceSquared
 		end
 
 		if ShouldUpdate then
-			-- Sum all wave components
-			local TotalDisplacement = Vector3.new(0, 0, 0)
+			local TotalDisplacement = Vector3.zero
 
 			for _, Wave in ipairs(WaveConfig.Waves) do
-				local Displacement = Gerstner(
-					WorldPos,
+				local Displacement = GerstnerWave.CalculateSingleWave(
+					WorldPosition,
 					Wave.Wavelength,
 					Wave.Direction,
 					Wave.Steepness,
@@ -106,10 +94,8 @@ function OceanController:_Update()
 				TotalDisplacement = TotalDisplacement + Displacement
 			end
 
-			-- Apply displacement via Transform (this is what deforms the mesh)
 			Bone.Transform = CFrame.new(TotalDisplacement)
 		else
-			-- Reset bones outside range
 			Bone.Transform = CFrame.new()
 		end
 	end
@@ -118,7 +104,7 @@ end
 --[[
     Start the wave animation loop.
 ]]
-function OceanController:Start()
+function OceanController:Start(): ()
 	if self.Running then
 		warn("[OceanController] Already running")
 		return
@@ -127,7 +113,9 @@ function OceanController:Start()
 	self.Running = true
 
 	self.Connection = RunService.RenderStepped:Connect(function()
-		if not game:IsLoaded() then return end
+		if not game:IsLoaded() then
+			return
+		end
 		self:_Update()
 	end)
 end
@@ -135,18 +123,20 @@ end
 --[[
     Stop the wave animation loop.
 ]]
-function OceanController:Stop()
-	if not self.Running then return end
+function OceanController:Stop(): ()
+	if not self.Running then
+		return
+	end
 
 	self.Running = false
+	local Connection = self.Connection :: RBXScriptConnection?
 
-	if self.Connection then
-		self.Connection:Disconnect()
+	if Connection then
+		Connection:Disconnect()
 		self.Connection = nil
 	end
 
-	-- Reset all bones
-	for _, Bone in pairs(self.Bones) do
+	for _, Bone in ipairs(self.Bones) do
 		Bone.Transform = CFrame.new()
 	end
 end
@@ -161,7 +151,7 @@ end
 --[[
     Get wave height at a position (convenience function).
 ]]
-function OceanController:GetWaveHeight(X, Z)
+function OceanController:GetWaveHeight(X: number, Z: number): number
 	return self.HeightSampler:GetHeight(X, Z)
 end
 

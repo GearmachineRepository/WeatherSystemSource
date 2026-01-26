@@ -1,10 +1,14 @@
+--!strict
 --[[
     GerstnerWave
     Mathematical functions for Gerstner wave calculations.
 
     This module provides the core wave math used by both:
-    - OceanController (to displace bones visually)
-    - WaveHeightSampler (to calculate heights for boats)
+    - OceanController (to displace bones visually on client)
+    - BoatPhysicsServer (to calculate heights for boats on server)
+
+    CRITICAL: Both server and client MUST use workspace:GetServerTimeNow()
+    for synchronized wave calculations.
 ]]
 
 local WaveConfig = require(script.Parent.WaveConfig)
@@ -13,10 +17,10 @@ local GerstnerWave = {}
 
 --[[
     Get synchronized time for wave calculations.
-    Uses the same formula as the reference wave module.
+    Uses workspace:GetServerTimeNow() which is synchronized across server and all clients.
 ]]
-function GerstnerWave.GetSyncedTime()
-    return workspace:GetServerTimeNow() / WaveConfig.TimeModifier
+function GerstnerWave.GetSyncedTime(): number
+	return workspace:GetServerTimeNow() / WaveConfig.TimeModifier
 end
 
 --[[
@@ -33,7 +37,14 @@ end
     Returns:
         Vector3 - The displacement (X, Y, Z offset)
 ]]
-function GerstnerWave.CalculateSingleWave(Position, Wavelength, Direction, Steepness, Gravity, Time)
+function GerstnerWave.CalculateSingleWave(
+	Position: Vector3,
+	Wavelength: number,
+	Direction: Vector2,
+	Steepness: number,
+	Gravity: number,
+	Time: number
+): Vector3
 	local K = (2 * math.pi) / Wavelength
 	local A = Steepness / K
 	local D = Direction.Unit
@@ -55,15 +66,15 @@ end
 
     Parameters:
         Position: Vector3 - The world position to sample
-        Time: number (optional) - Override synced time
+        Time: number? - Override synced time (optional)
 
     Returns:
         Vector3 - Total displacement from all waves combined
 ]]
-function GerstnerWave.CalculateTotalDisplacement(Position, Time)
-	Time = Time or GerstnerWave.GetSyncedTime()
+function GerstnerWave.CalculateTotalDisplacement(Position: Vector3, Time: number?): Vector3
+	local ResolvedTime = Time or GerstnerWave.GetSyncedTime()
 
-	local TotalDisplacement = Vector3.new(0, 0, 0)
+	local TotalDisplacement = Vector3.zero
 
 	for _, Wave in ipairs(WaveConfig.Waves) do
 		local Displacement = GerstnerWave.CalculateSingleWave(
@@ -72,7 +83,7 @@ function GerstnerWave.CalculateTotalDisplacement(Position, Time)
 			Wave.Direction,
 			Wave.Steepness,
 			Wave.Gravity,
-			Time
+			ResolvedTime
 		)
 		TotalDisplacement = TotalDisplacement + Displacement
 	end
@@ -87,12 +98,12 @@ end
     Parameters:
         X: number - World X position
         Z: number - World Z position
-        Time: number (optional) - Override synced time
+        Time: number? - Override synced time (optional)
 
     Returns:
         number - The Y height of the wave surface
 ]]
-function GerstnerWave.GetIdealHeight(X, Z, Time)
+function GerstnerWave.GetIdealHeight(X: number, Z: number, Time: number?): number
 	local Position = Vector3.new(X, 0, Z)
 	local Displacement = GerstnerWave.CalculateTotalDisplacement(Position, Time)
 	return WaveConfig.BaseWaterHeight + Displacement.Y
@@ -104,12 +115,12 @@ end
 
     Parameters:
         OriginalPosition: Vector3 - The rest position of the bone
-        Time: number (optional) - Override synced time
+        Time: number? - Override synced time (optional)
 
     Returns:
         Vector3 - The new world position after wave displacement
 ]]
-function GerstnerWave.GetDisplacedPosition(OriginalPosition, Time)
+function GerstnerWave.GetDisplacedPosition(OriginalPosition: Vector3, Time: number?): Vector3
 	local Displacement = GerstnerWave.CalculateTotalDisplacement(OriginalPosition, Time)
 	return OriginalPosition + Displacement
 end
