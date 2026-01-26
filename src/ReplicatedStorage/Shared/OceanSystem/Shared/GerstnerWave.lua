@@ -1,7 +1,7 @@
 --!strict
 --[[
     GerstnerWave
-    Mathematical functions for Gerstner wave calculations.
+    Mathematical functions for Gerstner wave calculations with noise detail layer.
 
     This module provides the core wave math used by both:
     - OceanController (to displace bones visually on client)
@@ -15,12 +15,79 @@ local WaveConfig = require(script.Parent.WaveConfig)
 
 local GerstnerWave = {}
 
+local TAU = math.pi * 2
+
 --[[
     Get synchronized time for wave calculations.
     Uses workspace:GetServerTimeNow() which is synchronized across server and all clients.
 ]]
 function GerstnerWave.GetSyncedTime(): number
 	return workspace:GetServerTimeNow() / WaveConfig.TimeModifier
+end
+
+--[[
+    Deterministic noise function for synchronized displacement.
+    Uses math.noise which is consistent across server/client for same inputs.
+
+    Parameters:
+        X: number - World X position
+        Z: number - World Z position
+        Time: number - Synced time
+
+    Returns:
+        number - Noise value between -1 and 1
+]]
+local function SampleNoise(X: number, Z: number, Time: number, Scale: number, Speed: number): number
+	local NoiseX = X * Scale + Time * Speed
+	local NoiseZ = Z * Scale + Time * Speed * 0.7
+	return math.noise(NoiseX, NoiseZ, Time * 0.1)
+end
+
+--[[
+    Calculate layered noise displacement for surface detail.
+    Adds the choppy, chaotic look that breaks up Gerstner patterns.
+
+    Parameters:
+        X: number - World X position
+        Z: number - World Z position
+        Time: number - Synced time
+
+    Returns:
+        Vector3 - Small-scale displacement
+]]
+function GerstnerWave.CalculateNoiseDisplacement(X: number, Z: number, Time: number): Vector3
+	local Settings = WaveConfig.NoiseSettings
+	if not Settings or not Settings.Enabled then
+		return Vector3.zero
+	end
+
+	local TotalY = 0
+	local TotalX = 0
+	local TotalZ = 0
+
+	local Amplitude = Settings.Amplitude
+	local Scale = Settings.Scale
+	local Speed = Settings.Speed
+	local Lacunarity = Settings.Lacunarity
+	local Persistence = Settings.Persistence
+
+	for _Octave = 1, Settings.Octaves do
+		local NoiseValue = SampleNoise(X, Z, Time, Scale, Speed)
+		TotalY = TotalY + NoiseValue * Amplitude
+
+		if Settings.HorizontalDisplacement then
+			local NoiseX = SampleNoise(X + 100, Z, Time, Scale, Speed * 1.1)
+			local NoiseZ = SampleNoise(X, Z + 100, Time, Scale, Speed * 0.9)
+			TotalX = TotalX + NoiseX * Amplitude * 0.3
+			TotalZ = TotalZ + NoiseZ * Amplitude * 0.3
+		end
+
+		Amplitude = Amplitude * Persistence
+		Scale = Scale * Lacunarity
+		Speed = Speed * 1.2
+	end
+
+	return Vector3.new(TotalX, TotalY, TotalZ)
 end
 
 --[[
@@ -45,7 +112,7 @@ function GerstnerWave.CalculateSingleWave(
 	Gravity: number,
 	Time: number
 ): Vector3
-	local K = (2 * math.pi) / Wavelength
+	local K = TAU / Wavelength
 	local A = Steepness / K
 	local D = Direction.Unit
 	local C = math.sqrt(Gravity / K)
@@ -62,7 +129,7 @@ function GerstnerWave.CalculateSingleWave(
 end
 
 --[[
-    Calculate total displacement from all wave components.
+    Calculate total displacement from all wave components plus noise.
 
     Parameters:
         Position: Vector3 - The world position to sample
@@ -88,11 +155,18 @@ function GerstnerWave.CalculateTotalDisplacement(Position: Vector3, Time: number
 		TotalDisplacement = TotalDisplacement + Displacement
 	end
 
+	local NoiseDisplacement = GerstnerWave.CalculateNoiseDisplacement(
+		Position.X,
+		Position.Z,
+		ResolvedTime
+	)
+	TotalDisplacement = TotalDisplacement + NoiseDisplacement
+
 	return TotalDisplacement
 end
 
 --[[
-    Get the ideal wave height at a position (ignoring mesh triangles).
+    Get the ideal wave height at a position.
     Use this for quick estimates or when outside the bone grid.
 
     Parameters:
