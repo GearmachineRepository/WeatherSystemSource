@@ -29,6 +29,12 @@ local BODY_GYRO_MAX_TORQUE = math.huge
 local BODY_GYRO_DAMPING = 500
 local BODY_GYRO_POWER = 5000
 
+local OCCUPIED_UPDATE_RATE = 30
+local IDLE_UPDATE_RATE = 10
+
+local OCCUPIED_UPDATE_INTERVAL = 1 / OCCUPIED_UPDATE_RATE
+local IDLE_UPDATE_INTERVAL = 1 / IDLE_UPDATE_RATE
+
 type BoatSettings = {
 	MaxForwardSpeed: number,
 	MaxReverseSpeed: number,
@@ -52,6 +58,7 @@ type BoatData = {
 	Settings: BoatSettings,
 	CurrentSpeed: number,
 	CurrentTurnSpeed: number,
+	UpdateAccumulator: number,
 	Trove: typeof(Trove.new()),
 }
 
@@ -313,6 +320,7 @@ local function InitializeBoat(Model: Model): ()
 		Settings = Settings,
 		CurrentSpeed = 0,
 		CurrentTurnSpeed = 0,
+		UpdateAccumulator = 0,
 		Trove = BoatTrove,
 	}
 
@@ -359,10 +367,24 @@ local function SetupExistingBoats(): ()
 	end
 end
 
+local function IsOccupied(Data: BoatData): boolean
+    if not Data.Seat then
+        return false
+    end
+    return Data.Seat.Occupant ~= nil
+end
+
 local function OnHeartbeat(DeltaTime: number): ()
-	for _, Data in pairs(ActiveBoats) do
-		UpdateBoat(Data, DeltaTime)
-	end
+    for _, Data in pairs(ActiveBoats) do
+        Data.UpdateAccumulator = Data.UpdateAccumulator + DeltaTime
+
+        local Interval = if IsOccupied(Data) then OCCUPIED_UPDATE_INTERVAL else IDLE_UPDATE_INTERVAL
+
+        if Data.UpdateAccumulator >= Interval then
+            UpdateBoat(Data, Data.UpdateAccumulator)
+            Data.UpdateAccumulator = 0
+        end
+    end
 end
 
 MainTrove:Connect(CollectionService:GetInstanceAddedSignal(BOAT_TAG), function(Instance)
