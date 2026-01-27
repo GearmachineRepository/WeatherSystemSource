@@ -35,6 +35,11 @@ local IDLE_UPDATE_RATE = 10
 local OCCUPIED_UPDATE_INTERVAL = 1 / OCCUPIED_UPDATE_RATE
 local IDLE_UPDATE_INTERVAL = 1 / IDLE_UPDATE_RATE
 
+local OWNERSHIP_RELEASE_SPEED = 0.25
+local OWNERSHIP_RELEASE_DELAY = 1.0
+
+local MOVING_SPEED_THRESHOLD = 0.25
+
 type BoatSettings = {
 	MaxForwardSpeed: number,
 	MaxReverseSpeed: number,
@@ -60,6 +65,8 @@ type BoatData = {
 	CurrentTurnSpeed: number,
 	UpdateAccumulator: number,
 	Trove: typeof(Trove.new()),
+	LastOwner: Player?,
+	LastOccupantChangeTime: number,
 }
 
 local ActiveBoats: {[Model]: BoatData} = {}
@@ -123,22 +130,49 @@ local function DisableVehicleSeatPhysics(Seat: VehicleSeat): ()
 	Seat.TurnSpeed = 0
 end
 
+
 local function SetNetworkOwnership(Data: BoatData): ()
 	local Seat = Data.Seat
 	if not Seat then
 		return
 	end
 
-	local Owner: Player? = nil
-	local Occupant = Seat.Occupant :: Humanoid?
-	if Occupant then
-		local Character = Occupant.Parent :: Model?
-		if not Character then return end
-		Owner = Players:GetPlayerFromCharacter(Character)
+	local CurrentTime = os.clock()
+
+	local OccupantHumanoid = Seat.Occupant :: Humanoid?
+	if OccupantHumanoid then
+		local Character = OccupantHumanoid.Parent :: Model?
+		local Owner = if Character then Players:GetPlayerFromCharacter(Character) else nil
+
+		Data.LastOwner = Owner
+		Data.LastOccupantChangeTime = CurrentTime
+
+		if Owner then
+			pcall(function()
+				Data.PrimaryPart:SetNetworkOwner(Owner)
+			end)
+		end
+
+		return
+	end
+
+	-- No occupant: keep last owner while slowing down, then release to server later
+	if Data.CurrentSpeed > OWNERSHIP_RELEASE_SPEED then
+		local LastOwner = Data.LastOwner
+		if LastOwner and LastOwner.Parent then
+			pcall(function()
+				Data.PrimaryPart:SetNetworkOwner(LastOwner)
+			end)
+		end
+		return
+	end
+
+	if CurrentTime - Data.LastOccupantChangeTime < OWNERSHIP_RELEASE_DELAY then
+		return
 	end
 
 	pcall(function()
-		Data.PrimaryPart:SetNetworkOwner(Owner)
+		Data.PrimaryPart:SetNetworkOwner(nil)
 	end)
 end
 
@@ -260,6 +294,8 @@ local function UpdateBoatMovement(Data: BoatData, DeltaTime: number): ()
 
 	local Forward = GetHorizontalLookVector(Data.PrimaryPart)
 	Data.BodyVelocity.Velocity = Forward * Data.CurrentSpeed
+
+	SetNetworkOwnership(Data)
 end
 
 local function UpdateBoat(Data: BoatData, DeltaTime: number): ()
@@ -322,6 +358,8 @@ local function InitializeBoat(Model: Model): ()
 		CurrentTurnSpeed = 0,
 		UpdateAccumulator = 0,
 		Trove = BoatTrove,
+		LastOwner = nil,
+		LastOccupantChangeTime = 0,
 	}
 
 	if Seat then
@@ -374,17 +412,29 @@ local function IsOccupied(Data: BoatData): boolean
     return Data.Seat.Occupant ~= nil
 end
 
+local function GetUpdateInterval(Data: BoatData): number
+	if IsOccupied(Data) then
+		return OCCUPIED_UPDATE_INTERVAL
+	end
+
+	if math.abs(Data.CurrentSpeed) > MOVING_SPEED_THRESHOLD or math.abs(Data.CurrentTurnSpeed) > math.rad(1) then
+		return OCCUPIED_UPDATE_INTERVAL
+	end
+
+	return IDLE_UPDATE_INTERVAL
+end
+
 local function OnHeartbeat(DeltaTime: number): ()
-    for _, Data in pairs(ActiveBoats) do
-        Data.UpdateAccumulator = Data.UpdateAccumulator + DeltaTime
+	for _, Data in pairs(ActiveBoats) do
+		Data.UpdateAccumulator += DeltaTime
 
-        local Interval = if IsOccupied(Data) then OCCUPIED_UPDATE_INTERVAL else IDLE_UPDATE_INTERVAL
+		local Interval = GetUpdateInterval(Data)
 
-        if Data.UpdateAccumulator >= Interval then
-            UpdateBoat(Data, Data.UpdateAccumulator)
-            Data.UpdateAccumulator = 0
-        end
-    end
+		if Data.UpdateAccumulator >= Interval then
+			UpdateBoat(Data, Data.UpdateAccumulator)
+			Data.UpdateAccumulator = 0
+		end
+	end
 end
 
 MainTrove:Connect(CollectionService:GetInstanceAddedSignal(BOAT_TAG), function(Instance)
