@@ -2,11 +2,14 @@
     OceanSettings
     Dynamic ocean intensity control via Attributes.
 
-    Attributes on workspace.Ocean.Plane:
+    Add these Attributes to your workspace.Ocean.Plane:
         - Intensity (number, 0-1): Overall wave intensity
         - Speed (number, 0.5-2): Wave speed multiplier
         - WindDirection (number, 0-360): Primary wave direction in degrees
-        - Choppiness (number, 0-1): Noise detail intensity
+        - Choppiness (number, 0-1): Adds extra smaller waves
+
+    Or use presets:
+        OceanSettings:SetPreset("Storm")
 
     Presets: "Calm", "Moderate", "Rough", "Storm"
 ]]
@@ -15,83 +18,56 @@ local RunService = game:GetService("RunService")
 
 local OceanSettings = {}
 
---[[
-    5 Gerstner Waves + Noise Strategy
-
-    Waves handle the organized rolling motion.
-    Noise (controlled by Choppiness) handles chaotic surface detail.
-
-    Directions spread across 360 degrees to avoid corduroy patterns.
-    Prime-ish wavelengths prevent harmonic repetition.
-]]
 OceanSettings.BaseWaves = {
 	{
-		Wavelength = 173,
-		Steepness = 0.15,
+		Wavelength = 200,
+		Direction = Vector2.new(1, 0),
+		Steepness = 0.20,
 		Gravity = 9.8,
 		Layer = "Primary",
-		AngleOffset = 0,
 	},
 	{
-		Wavelength = 97,
-		Steepness = 0.12,
-		Gravity = 9.8,
-		Layer = "Primary",
-		AngleOffset = 72,
-	},
-	{
-		Wavelength = 53,
-		Steepness = 0.09,
+		Wavelength = 120,
+		Direction = Vector2.new(0.7, 0.7),
+		Steepness = 0.14,
 		Gravity = 9.8,
 		Layer = "Secondary",
-		AngleOffset = 155,
 	},
 	{
-		Wavelength = 31,
-		Steepness = 0.07,
+		Wavelength = 40,
+		Direction = Vector2.new(-0.3, 1),
+		Steepness = 0.08,
 		Gravity = 9.8,
-		Layer = "Secondary",
-		AngleOffset = 230,
+		Layer = "Chop",
 	},
 	{
-		Wavelength = 17,
-		Steepness = 0.05,
+		Wavelength = 15,
+		Direction = Vector2.new(0.5, -0.8),
+		Steepness = 0.04,
 		Gravity = 9.8,
-		Layer = "Secondary",
-		AngleOffset = 310,
+		Layer = "Chop",
 	},
-}
-
-OceanSettings.BaseNoiseSettings = {
-	Enabled = true,
-	Amplitude = 0.5,
-	Scale = 0.025,
-	Speed = 0.6,
-	Octaves = 3,
-	Lacunarity = 2.0,
-	Persistence = 0.5,
-	HorizontalDisplacement = true,
 }
 
 OceanSettings.Presets = {
 	Calm = {
-		Intensity = 0.2,
+		Intensity = 0.15,
 		Speed = 0.7,
 		Choppiness = 0.1,
 	},
 	Moderate = {
-		Intensity = 0.5,
+		Intensity = 0.4,
 		Speed = 1.0,
-		Choppiness = 0.5,
+		Choppiness = 0.4,
 	},
 	Rough = {
-		Intensity = 0.75,
+		Intensity = 0.7,
 		Speed = 1.2,
-		Choppiness = 0.75,
+		Choppiness = 0.7,
 	},
 	Storm = {
 		Intensity = 1.0,
-		Speed = 1.4,
+		Speed = 1.5,
 		Choppiness = 1.0,
 	},
 }
@@ -120,7 +96,7 @@ function OceanSettings:Initialize(Mesh, Config)
 		Mesh:SetAttribute("Speed", 1.0)
 	end
 	if not Mesh:GetAttribute("WindDirection") then
-		Mesh:SetAttribute("WindDirection", 0)
+		Mesh:SetAttribute("WindDirection", 45)
 	end
 	if not Mesh:GetAttribute("Choppiness") then
 		Mesh:SetAttribute("Choppiness", 0.5)
@@ -141,9 +117,7 @@ function OceanSettings:Initialize(Mesh, Config)
 end
 
 function OceanSettings:_ReadAttributes()
-	if not OceanMesh then
-		return
-	end
+	if not OceanMesh then return end
 
 	CurrentSettings.Intensity = math.clamp(OceanMesh:GetAttribute("Intensity") or 0.5, 0, 1)
 	CurrentSettings.Speed = math.clamp(OceanMesh:GetAttribute("Speed") or 1.0, 0.1, 3)
@@ -152,14 +126,14 @@ function OceanSettings:_ReadAttributes()
 end
 
 function OceanSettings:_ApplySettings()
-	if not WaveConfig then
-		return
-	end
+	if not WaveConfig then return end
 
 	local Intensity = CurrentSettings.Intensity
 	local Speed = CurrentSettings.Speed
-	local WindRad = math.rad(CurrentSettings.WindDirection)
+	local WindDeg = CurrentSettings.WindDirection
 	local Choppiness = CurrentSettings.Choppiness
+
+	local WindRad = math.rad(WindDeg)
 
 	local ScaledWaves = {}
 
@@ -169,11 +143,15 @@ function OceanSettings:_ApplySettings()
 			Gravity = BaseWave.Gravity,
 		}
 
-		Wave.Steepness = BaseWave.Steepness * Intensity
+		local SteepnessMultiplier = Intensity
+		if BaseWave.Layer == "Chop" then
+			SteepnessMultiplier = Intensity * Choppiness
+		end
+		Wave.Steepness = BaseWave.Steepness * SteepnessMultiplier
 
-		local AngleOffset = math.rad(BaseWave.AngleOffset or 0)
-		local FinalAngle = WindRad + AngleOffset
-		Wave.Direction = Vector2.new(math.cos(FinalAngle), math.sin(FinalAngle))
+		local OrigDir = BaseWave.Direction
+		local Angle = math.atan2(OrigDir.Y, OrigDir.X) + WindRad
+		Wave.Direction = Vector2.new(math.cos(Angle), math.sin(Angle))
 
 		if Wave.Steepness > 0.001 then
 			table.insert(ScaledWaves, Wave)
@@ -182,18 +160,6 @@ function OceanSettings:_ApplySettings()
 
 	WaveConfig.Waves = ScaledWaves
 	WaveConfig.TimeModifier = 4 / Speed
-
-	local BaseNoise = self.BaseNoiseSettings
-	WaveConfig.NoiseSettings = {
-		Enabled = BaseNoise.Enabled and Choppiness > 0.01,
-		Amplitude = BaseNoise.Amplitude * Choppiness * Intensity,
-		Scale = BaseNoise.Scale,
-		Speed = BaseNoise.Speed * Speed,
-		Octaves = BaseNoise.Octaves,
-		Lacunarity = BaseNoise.Lacunarity,
-		Persistence = BaseNoise.Persistence,
-		HorizontalDisplacement = BaseNoise.HorizontalDisplacement,
-	}
 
 	OnSettingsChanged:Fire(CurrentSettings)
 end
@@ -210,12 +176,12 @@ function OceanSettings:SetPreset(PresetName)
 		OceanMesh:SetAttribute("Speed", Preset.Speed)
 		OceanMesh:SetAttribute("Choppiness", Preset.Choppiness)
 	end
+
+	print("[OceanSettings] Applied preset:", PresetName)
 end
 
 function OceanSettings:Set(Settings)
-	if not OceanMesh then
-		return
-	end
+	if not OceanMesh then return end
 
 	if Settings.Intensity then
 		OceanMesh:SetAttribute("Intensity", Settings.Intensity)
@@ -241,16 +207,14 @@ function OceanSettings:Get()
 end
 
 function OceanSettings:TweenTo(TargetSettings, Duration)
-	if not OceanMesh then
-		return
-	end
+	if not OceanMesh then return end
 
 	local StartSettings = self:Get()
-	local StartTime = tick()
+	local StartTime = os.clock()
 
 	local Connection
 	Connection = RunService.Heartbeat:Connect(function()
-		local Elapsed = tick() - StartTime
+		local Elapsed = os.clock() - StartTime
 		local Alpha = math.min(Elapsed / Duration, 1)
 
 		Alpha = Alpha * Alpha * (3 - 2 * Alpha)

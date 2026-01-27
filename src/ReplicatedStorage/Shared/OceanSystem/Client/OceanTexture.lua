@@ -32,7 +32,7 @@ export type OceanTexture = {
     VariantNames: {string},
     CurrentFrameIndex: number,
     FrameRate: number,
-    TimeSinceLastFrame: number,
+    StartTime: number,
     Running: boolean,
     Connection: RBXScriptConnection?,
     _DecalFolderName: string,
@@ -60,7 +60,7 @@ function OceanTexture.new(OceanMesh: MeshPart, Config: OceanTextureConfig?): _Oc
     self.VariantNames = {}
     self.CurrentFrameIndex = 1
     self.FrameRate = ResolvedConfig.FrameRate or DEFAULT_FRAME_RATE
-    self.TimeSinceLastFrame = 0
+    self.StartTime = 0
     self.Running = false
     self.Connection = nil
 
@@ -121,37 +121,21 @@ function OceanTexture:Preload()
 end
 
 --[[
-    Update to the next frame.
+    Main update loop.
+    Uses absolute time to calculate frame index, avoiding floating-point accumulation drift.
 ]]
-function OceanTexture:_UpdateFrame()
-    if #self.VariantNames == 0 then
+function OceanTexture:_Update()
+    local VariantCount = #self.VariantNames
+    if VariantCount == 0 then
         return
     end
 
-    local VariantName = self.VariantNames[self.CurrentFrameIndex]
-    self.OceanMesh.MaterialVariant = VariantName
+    local Elapsed = os.clock() - self.StartTime
+    local FrameIndex = math.floor(Elapsed * self.FrameRate) % VariantCount + 1
 
-    local CurrentFrameIndex = self.CurrentFrameIndex :: number
-
-    self.CurrentFrameIndex = CurrentFrameIndex + 1
-    if self.CurrentFrameIndex > #self.VariantNames then
-        self.CurrentFrameIndex = 1
-    end
-end
-
---[[
-    Main update loop.
-]]
-function OceanTexture:_Update(DeltaTime: number)
-    local TimeSinceLastFrame = self.TimeSinceLastFrame :: number
-
-    self.TimeSinceLastFrame = TimeSinceLastFrame + DeltaTime
-
-    local FrameInterval = 1 / self.FrameRate
-
-    if self.TimeSinceLastFrame >= FrameInterval then
-        self:_UpdateFrame()
-        self.TimeSinceLastFrame = self.TimeSinceLastFrame - FrameInterval
+    if FrameIndex ~= self.CurrentFrameIndex then
+        self.CurrentFrameIndex = FrameIndex
+        self.OceanMesh.MaterialVariant = self.VariantNames[FrameIndex]
     end
 end
 
@@ -170,11 +154,12 @@ function OceanTexture:Start()
     end
 
     self.Running = true
+    self.StartTime = os.clock()
+    self.CurrentFrameIndex = 1
+    self.OceanMesh.MaterialVariant = self.VariantNames[1]
 
-    self:_UpdateFrame()
-
-    self.Connection = RunService.RenderStepped:Connect(function(DeltaTime)
-        self:_Update(DeltaTime)
+    self.Connection = RunService.RenderStepped:Connect(function()
+        self:_Update()
     end)
 end
 
