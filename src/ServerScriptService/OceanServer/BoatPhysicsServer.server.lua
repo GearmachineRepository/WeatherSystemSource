@@ -75,6 +75,7 @@ type BoatData = {
 	Model: Model,
 	PrimaryPart: BasePart,
 	Seat: VehicleSeat?,
+	SeatConnection: RBXScriptConnection?,
 	Buoys: BuoyPoints,
 	BodyPosition: BodyPosition,
 	BodyGyro: BodyGyro,
@@ -314,10 +315,13 @@ local function InitializeBoat(Model: Model): ()
 
 	local Seat = FindVehicleSeat(Model)
 
+	local SeatConnection: RBXScriptConnection? = nil
+
 	local Data: BoatData = {
 		Model = Model,
 		PrimaryPart = PrimaryPart,
 		Seat = Seat,
+		SeatConnection = SeatConnection,
 		Buoys = Buoys,
 		BodyPosition = BodyPosition,
 		BodyGyro = BodyGyro,
@@ -331,12 +335,15 @@ local function InitializeBoat(Model: Model): ()
 	ActiveBoats[Model] = Data
 	CollectionService:AddTag(Model, MOVING_SURFACE_TAG)
 
+
 	if Seat then
 		DisableVehicleSeatPhysics(Seat)
-		Seat:GetPropertyChangedSignal("Occupant"):Connect(function()
+		SeatConnection = Seat:GetPropertyChangedSignal("Occupant"):Connect(function()
 			SetNetworkOwnership(Data)
 		end)
 	end
+
+	Data.SeatConnection = SeatConnection
 
 	print("[BoatPhysicsServer] Initialized boat:", Model.Name, "with", #Buoys.All, "buoys")
 end
@@ -344,6 +351,9 @@ end
 local function RemoveBoat(Model: Model): ()
 	local Data = ActiveBoats[Model]
 	if Data then
+		if Data.SeatConnection then
+			Data.SeatConnection:Disconnect()
+		end
 		if Data.BodyPosition then
 			Data.BodyPosition:Destroy()
 		end

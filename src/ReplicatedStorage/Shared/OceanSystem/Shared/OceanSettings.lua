@@ -16,6 +16,8 @@
 
 local RunService = game:GetService("RunService")
 
+local ActiveTweenConnection: RBXScriptConnection? = nil
+
 local OceanSettings = {}
 
 OceanSettings.BaseWaves = {
@@ -209,11 +211,15 @@ end
 function OceanSettings:TweenTo(TargetSettings, Duration)
 	if not OceanMesh then return end
 
+	if ActiveTweenConnection then
+		ActiveTweenConnection:Disconnect()
+		ActiveTweenConnection = nil
+	end
+
 	local StartSettings = self:Get()
 	local StartTime = os.clock()
 
-	local Connection
-	Connection = RunService.Heartbeat:Connect(function()
+	ActiveTweenConnection = RunService.Heartbeat:Connect(function()
 		local Elapsed = os.clock() - StartTime
 		local Alpha = math.min(Elapsed / Duration, 1)
 
@@ -240,11 +246,14 @@ function OceanSettings:TweenTo(TargetSettings, Duration)
 		end
 
 		if Alpha >= 1 then
-			Connection:Disconnect()
+			if ActiveTweenConnection then
+				ActiveTweenConnection:Disconnect()
+				ActiveTweenConnection = nil
+			end
 		end
 	end)
 
-	return Connection
+	return ActiveTweenConnection
 end
 
 function OceanSettings:TweenToPreset(PresetName, Duration)

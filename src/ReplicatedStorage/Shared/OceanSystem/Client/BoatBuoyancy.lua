@@ -42,20 +42,23 @@ function BoatBuoyancy.new(BoatModel, HeightSampler)
 	self.HeightSampler = HeightSampler
 	self.Running = false
 	self.Connection = nil
+	self.CleanupConnection = nil  -- Add this
 
-	-- Vertical offset (how high above wave surface the boat sits)
 	self.HeightOffset = 0
-
-	-- Smoothing factor (0-1, lower = smoother but slower response)
 	self.Smoothing = 0.15
 
-	-- Current smoothed values
 	self.CurrentHeight = 0
 	self.CurrentPitch = 0
 	self.CurrentRoll = 0
 
-	-- Find buoy parts
 	self:_FindBuoys()
+
+	-- Auto-cleanup when model is destroyed
+	self.CleanupConnection = BoatModel.AncestryChanged:Connect(function(_, Parent)
+		if not Parent then
+			self:Destroy()
+		end
+	end)
 
 	return self
 end
@@ -64,26 +67,26 @@ end
     Find and store references to buoy parts.
 ]]
 function BoatBuoyancy:_FindBuoys()
-	local BuoysFolder = self.Model:WaitForChild("Buoys", 5)
+    local BuoysFolder = self.Model:FindFirstChild("Buoys")
 
-	if not BuoysFolder then
-		warn("[BoatBuoyancy] No 'Buoys' folder found in boat model. Creating default buoys.")
-		self:_CreateDefaultBuoys()
-		BuoysFolder = self.Model:FindFirstChild("Buoys")
-	end
+    if not BuoysFolder then
+        warn("[BoatBuoyancy] No 'Buoys' folder found in boat model. Creating default buoys.")
+        self:_CreateDefaultBuoys()
+        BuoysFolder = self.Model:FindFirstChild("Buoys")
+    end
 
-	self.Bow = BuoysFolder:WaitForChild("Bow", 5)
-	self.Stern = BuoysFolder:WaitForChild("Stern", 5)
-	self.Port = BuoysFolder:WaitForChild("Port", 5)
-	self.Starboard = BuoysFolder:WaitForChild("Starboard", 5)
+    -- Move this AFTER potential creation of default buoys
+    self.Bow = BuoysFolder:FindFirstChild("Bow")
+    self.Stern = BuoysFolder:FindFirstChild("Stern")
+    self.Port = BuoysFolder:FindFirstChild("Port")
+    self.Starboard = BuoysFolder:FindFirstChild("Starboard")
 
-	-- Collect all buoys for height averaging
-	self.AllBuoys = {}
-	for _, Child in pairs(BuoysFolder:GetChildren()) do
-		if Child:IsA("BasePart") then
-			table.insert(self.AllBuoys, Child)
-		end
-	end
+    self.AllBuoys = {}
+    for _, Child in pairs(BuoysFolder:GetChildren()) do
+        if Child:IsA("BasePart") then
+            table.insert(self.AllBuoys, Child)
+        end
+    end
 
 	-- Validate required buoys
 	if not (self.Bow and self.Stern and self.Port and self.Starboard) then
@@ -312,6 +315,26 @@ end
 ]]
 function BoatBuoyancy:SetSmoothing(Smoothing)
 	self.Smoothing = math.clamp(Smoothing, 0.01, 1)
+end
+
+--[[
+    Clean up all connections and references.
+]]
+function BoatBuoyancy:Destroy()
+	self:Stop()
+
+	if self.CleanupConnection then
+		self.CleanupConnection:Disconnect()
+		self.CleanupConnection = nil
+	end
+
+	self.Model = nil
+	self.HeightSampler = nil
+	self.Bow = nil
+	self.Stern = nil
+	self.Port = nil
+	self.Starboard = nil
+	self.AllBuoys = {}
 end
 
 return BoatBuoyancy

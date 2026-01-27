@@ -131,14 +131,6 @@ function BoneGrid:_BuildGrid()
 			self.Grid[GridX][GridZ] = Bone
 		end
 	end
-
-	-- Count how many grid cells have bones
-	local FilledCells = 0
-	for _, Column in pairs(self.Grid) do
-		for _, _ in pairs(Column) do
-			FilledCells = FilledCells + 1
-		end
-	end
 end
 
 --[[

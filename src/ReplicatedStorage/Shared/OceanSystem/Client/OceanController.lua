@@ -155,4 +155,15 @@ function OceanController:GetWaveHeight(X: number, Z: number): number
 	return self.HeightSampler:GetHeight(X, Z)
 end
 
+-- Add after GetWaveHeight:
+--[[
+    Clean up the controller and all connections.
+]]
+function OceanController:Destroy(): ()
+	self:Stop()
+	self.Bones = {}
+	self.OceanMesh = nil
+	self.HeightSampler = nil
+end
+
 return OceanController
