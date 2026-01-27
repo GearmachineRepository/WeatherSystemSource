@@ -1,26 +1,35 @@
---[[
-    OceanSettings
-    Dynamic ocean intensity control via Attributes.
+--!strict
 
-    Add these Attributes to your workspace.Ocean.Plane:
-        - Intensity (number, 0-1): Overall wave intensity
-        - Speed (number, 0.5-2): Wave speed multiplier
-        - WindDirection (number, 0-360): Primary wave direction in degrees
-        - Choppiness (number, 0-1): Adds extra smaller waves
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-    Or use presets:
-        OceanSettings:SetPreset("Storm")
+local Trove = require(ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Trove"))
+local OceanConfig = require(script.Parent.OceanConfig)
 
-    Presets: "Calm", "Moderate", "Rough", "Storm"
-]]
+export type WaveDefinition = {
+	Wavelength: number,
+	Direction: Vector2,
+	Steepness: number,
+	Gravity: number,
+	Layer: string?,
+}
 
-local RunService = game:GetService("RunService")
+export type PresetSettings = {
+	Intensity: number?,
+	Speed: number?,
+	WindDirection: number?,
+	Choppiness: number?,
+}
 
-local ActiveTweenConnection: RBXScriptConnection? = nil
+export type RuntimeSettings = {
+	Intensity: number,
+	Speed: number,
+	WindDirection: number,
+	Choppiness: number,
+}
 
 local OceanSettings = {}
 
-OceanSettings.BaseWaves = {
+local BASE_WAVES: {WaveDefinition} = {
 	{
 		Wavelength = 200,
 		Direction = Vector2.new(1, 0),
@@ -51,7 +60,7 @@ OceanSettings.BaseWaves = {
 	},
 }
 
-OceanSettings.Presets = {
+local PRESETS: {[string]: PresetSettings} = {
 	Calm = {
 		Intensity = 0.15,
 		Speed = 0.7,
@@ -74,116 +83,144 @@ OceanSettings.Presets = {
 	},
 }
 
-local CurrentSettings = {
+local DEFAULT_SETTINGS: RuntimeSettings = {
 	Intensity = 0.5,
 	Speed = 1.0,
 	WindDirection = 0,
 	Choppiness = 0.5,
 }
 
-local OceanMesh = nil
-local WaveConfig = nil
-local OnSettingsChanged = Instance.new("BindableEvent")
+local SettingsTrove: typeof(Trove.new())? = nil
+local OceanMesh: MeshPart? = nil
+local CurrentSettings: RuntimeSettings = table.clone(DEFAULT_SETTINGS)
+local ComputedWaves: {WaveDefinition} = {}
+local ComputedTimeModifier: number = 5
 
+local OnSettingsChanged = Instance.new("BindableEvent")
 OceanSettings.Changed = OnSettingsChanged.Event
 
-function OceanSettings:Initialize(Mesh, Config)
-	OceanMesh = Mesh
-	WaveConfig = Config
+local function ComputeWaves(): ()
+	local Intensity = CurrentSettings.Intensity
+	local Speed = CurrentSettings.Speed
+	local WindRad = math.rad(CurrentSettings.WindDirection)
+	local Choppiness = CurrentSettings.Choppiness
 
+	local ScaledWaves: {WaveDefinition} = {}
+
+	for _, BaseWave in BASE_WAVES do
+		local SteepnessMultiplier = Intensity
+		if BaseWave.Layer == "Chop" then
+			SteepnessMultiplier = Intensity * Choppiness
+		end
+
+		local ComputedSteepness = BaseWave.Steepness * SteepnessMultiplier
+		if ComputedSteepness > 0.001 then
+			local OriginalDirection = BaseWave.Direction
+			local Angle = math.atan2(OriginalDirection.Y, OriginalDirection.X) + WindRad
+
+			table.insert(ScaledWaves, {
+				Wavelength = BaseWave.Wavelength,
+				Direction = Vector2.new(math.cos(Angle), math.sin(Angle)),
+				Steepness = ComputedSteepness,
+				Gravity = BaseWave.Gravity,
+				Layer = BaseWave.Layer,
+			})
+		end
+	end
+
+	ComputedWaves = ScaledWaves
+	ComputedTimeModifier = 4 / Speed
+
+	OnSettingsChanged:Fire(CurrentSettings)
+end
+
+local function ReadAttributes(): ()
+	if not OceanMesh then
+		return
+	end
+
+	local Intensity = OceanMesh:GetAttribute("Intensity") :: number?
+	local Speed = OceanMesh:GetAttribute("Speed") :: number?
+	local WindDirection = OceanMesh:GetAttribute("WindDirection") :: number?
+	local Choppiness = OceanMesh:GetAttribute("Choppiness") :: number?
+
+	CurrentSettings.Intensity = math.clamp(Intensity or 0.5, 0, 1)
+	CurrentSettings.Speed = math.clamp(Speed or 1.0, 0.1, 3)
+	CurrentSettings.WindDirection = (WindDirection or 0) % 360
+	CurrentSettings.Choppiness = math.clamp(Choppiness or 0.5, 0, 1)
+end
+
+local function SetupDefaultAttributes(Mesh: MeshPart): ()
 	if not Mesh:GetAttribute("Intensity") then
-		Mesh:SetAttribute("Intensity", 0.5)
+		Mesh:SetAttribute("Intensity", DEFAULT_SETTINGS.Intensity)
 	end
 	if not Mesh:GetAttribute("Speed") then
-		Mesh:SetAttribute("Speed", 1.0)
+		Mesh:SetAttribute("Speed", DEFAULT_SETTINGS.Speed)
 	end
 	if not Mesh:GetAttribute("WindDirection") then
 		Mesh:SetAttribute("WindDirection", 45)
 	end
 	if not Mesh:GetAttribute("Choppiness") then
-		Mesh:SetAttribute("Choppiness", 0.5)
+		Mesh:SetAttribute("Choppiness", DEFAULT_SETTINGS.Choppiness)
+	end
+end
+
+function OceanSettings.Initialize(Mesh: MeshPart): ()
+	if SettingsTrove then
+		SettingsTrove:Destroy()
 	end
 
-	self:_ReadAttributes()
-	self:_ApplySettings()
+	local NewTrove = Trove.new()
+	OceanMesh = Mesh
 
-	Mesh.AttributeChanged:Connect(function(AttributeName)
-		if AttributeName == "Intensity" or
-			AttributeName == "Speed" or
-			AttributeName == "WindDirection" or
-			AttributeName == "Choppiness" then
-			self:_ReadAttributes()
-			self:_ApplySettings()
+	SetupDefaultAttributes(Mesh)
+	ReadAttributes()
+	ComputeWaves()
+
+	NewTrove:Connect(Mesh.AttributeChanged, function(AttributeName: string)
+		if AttributeName == "Intensity"
+			or AttributeName == "Speed"
+			or AttributeName == "WindDirection"
+			or AttributeName == "Choppiness"
+		then
+			ReadAttributes()
+			ComputeWaves()
 		end
 	end)
+
+	SettingsTrove = NewTrove
 end
 
-function OceanSettings:_ReadAttributes()
-	if not OceanMesh then return end
-
-	CurrentSettings.Intensity = math.clamp(OceanMesh:GetAttribute("Intensity") or 0.5, 0, 1)
-	CurrentSettings.Speed = math.clamp(OceanMesh:GetAttribute("Speed") or 1.0, 0.1, 3)
-	CurrentSettings.WindDirection = (OceanMesh:GetAttribute("WindDirection") or 0) % 360
-	CurrentSettings.Choppiness = math.clamp(OceanMesh:GetAttribute("Choppiness") or 0.5, 0, 1)
+function OceanSettings.GetWaves(): {WaveDefinition}
+	return ComputedWaves
 end
 
-function OceanSettings:_ApplySettings()
-	if not WaveConfig then return end
-
-	local Intensity = CurrentSettings.Intensity
-	local Speed = CurrentSettings.Speed
-	local WindDeg = CurrentSettings.WindDirection
-	local Choppiness = CurrentSettings.Choppiness
-
-	local WindRad = math.rad(WindDeg)
-
-	local ScaledWaves = {}
-
-	for _, BaseWave in ipairs(self.BaseWaves) do
-		local Wave = {
-			Wavelength = BaseWave.Wavelength,
-			Gravity = BaseWave.Gravity,
-		}
-
-		local SteepnessMultiplier = Intensity
-		if BaseWave.Layer == "Chop" then
-			SteepnessMultiplier = Intensity * Choppiness
-		end
-		Wave.Steepness = BaseWave.Steepness * SteepnessMultiplier
-
-		local OrigDir = BaseWave.Direction
-		local Angle = math.atan2(OrigDir.Y, OrigDir.X) + WindRad
-		Wave.Direction = Vector2.new(math.cos(Angle), math.sin(Angle))
-
-		if Wave.Steepness > 0.001 then
-			table.insert(ScaledWaves, Wave)
-		end
-	end
-
-	WaveConfig.Waves = ScaledWaves
-	WaveConfig.TimeModifier = 4 / Speed
-
-	OnSettingsChanged:Fire(CurrentSettings)
+function OceanSettings.GetTimeModifier(): number
+	return ComputedTimeModifier
 end
 
-function OceanSettings:SetPreset(PresetName)
-	local Preset = self.Presets[PresetName]
-	if not Preset then
-		warn("[OceanSettings] Unknown preset:", PresetName)
+function OceanSettings.GetBaseWaterHeight(): number
+	return OceanConfig.BASE_WATER_HEIGHT
+end
+
+function OceanSettings.Get(): RuntimeSettings
+	return {
+		Intensity = CurrentSettings.Intensity,
+		Speed = CurrentSettings.Speed,
+		WindDirection = CurrentSettings.WindDirection,
+		Choppiness = CurrentSettings.Choppiness,
+	}
+end
+
+function OceanSettings.Set(Settings: {
+	Intensity: number?,
+	Speed: number?,
+	WindDirection: number?,
+	Choppiness: number?,
+}): ()
+	if not OceanMesh then
 		return
 	end
-
-	if OceanMesh then
-		OceanMesh:SetAttribute("Intensity", Preset.Intensity)
-		OceanMesh:SetAttribute("Speed", Preset.Speed)
-		OceanMesh:SetAttribute("Choppiness", Preset.Choppiness)
-	end
-
-	print("[OceanSettings] Applied preset:", PresetName)
-end
-
-function OceanSettings:Set(Settings)
-	if not OceanMesh then return end
 
 	if Settings.Intensity then
 		OceanMesh:SetAttribute("Intensity", Settings.Intensity)
@@ -199,71 +236,115 @@ function OceanSettings:Set(Settings)
 	end
 end
 
-function OceanSettings:Get()
-	return {
-		Intensity = CurrentSettings.Intensity,
-		Speed = CurrentSettings.Speed,
-		WindDirection = CurrentSettings.WindDirection,
-		Choppiness = CurrentSettings.Choppiness,
-	}
-end
-
-function OceanSettings:TweenTo(TargetSettings, Duration)
-	if not OceanMesh then return end
-
-	if ActiveTweenConnection then
-		ActiveTweenConnection:Disconnect()
-		ActiveTweenConnection = nil
-	end
-
-	local StartSettings = self:Get()
-	local StartTime = os.clock()
-
-	ActiveTweenConnection = RunService.Heartbeat:Connect(function()
-		local Elapsed = os.clock() - StartTime
-		local Alpha = math.min(Elapsed / Duration, 1)
-
-		Alpha = Alpha * Alpha * (3 - 2 * Alpha)
-
-		if TargetSettings.Intensity then
-			local Value = StartSettings.Intensity + (TargetSettings.Intensity - StartSettings.Intensity) * Alpha
-			OceanMesh:SetAttribute("Intensity", Value)
-		end
-		if TargetSettings.Speed then
-			local Value = StartSettings.Speed + (TargetSettings.Speed - StartSettings.Speed) * Alpha
-			OceanMesh:SetAttribute("Speed", Value)
-		end
-		if TargetSettings.Choppiness then
-			local Value = StartSettings.Choppiness + (TargetSettings.Choppiness - StartSettings.Choppiness) * Alpha
-			OceanMesh:SetAttribute("Choppiness", Value)
-		end
-		if TargetSettings.WindDirection then
-			local Start = StartSettings.WindDirection
-			local Target = TargetSettings.WindDirection
-			local Diff = (Target - Start + 180) % 360 - 180
-			local Value = Start + Diff * Alpha
-			OceanMesh:SetAttribute("WindDirection", Value)
-		end
-
-		if Alpha >= 1 then
-			if ActiveTweenConnection then
-				ActiveTweenConnection:Disconnect()
-				ActiveTweenConnection = nil
-			end
-		end
-	end)
-
-	return ActiveTweenConnection
-end
-
-function OceanSettings:TweenToPreset(PresetName, Duration)
-	local Preset = self.Presets[PresetName]
+function OceanSettings.SetPreset(PresetName: string): ()
+	local Preset = PRESETS[PresetName]
 	if not Preset then
 		warn("[OceanSettings] Unknown preset:", PresetName)
 		return
 	end
 
-	return self:TweenTo(Preset, Duration)
+	if OceanMesh then
+		OceanMesh:SetAttribute("Intensity", Preset.Intensity)
+		OceanMesh:SetAttribute("Speed", Preset.Speed)
+		OceanMesh:SetAttribute("Choppiness", Preset.Choppiness)
+	end
+end
+
+function OceanSettings.TweenTo(
+	TargetSettings: {
+		Intensity: number?,
+		Speed: number?,
+		WindDirection: number?,
+		Choppiness: number?,
+	},
+	Duration: number
+): RBXScriptConnection?
+	local ActiveMesh = OceanMesh
+	local ActiveTrove = SettingsTrove
+	if not ActiveMesh or not ActiveTrove then
+		return nil
+	end
+
+	if Duration <= 0 then
+		OceanSettings.Set(TargetSettings)
+		return nil
+	end
+
+	local RunService = game:GetService("RunService")
+	local StartSettings = OceanSettings.Get()
+	local StartTime = os.clock()
+
+	local TweenConnection: RBXScriptConnection? = nil
+
+	TweenConnection = RunService.Heartbeat:Connect(function()
+		local Elapsed = os.clock() - StartTime
+		local Alpha = math.min(Elapsed / Duration, 1)
+		Alpha = Alpha * Alpha * (3 - 2 * Alpha)
+
+		if TargetSettings.Intensity then
+			local Value = StartSettings.Intensity + (TargetSettings.Intensity - StartSettings.Intensity) * Alpha
+			ActiveMesh:SetAttribute("Intensity", Value)
+		end
+
+		if TargetSettings.Speed then
+			local Value = StartSettings.Speed + (TargetSettings.Speed - StartSettings.Speed) * Alpha
+			ActiveMesh:SetAttribute("Speed", Value)
+		end
+
+		if TargetSettings.Choppiness then
+			local Value = StartSettings.Choppiness + (TargetSettings.Choppiness - StartSettings.Choppiness) * Alpha
+			ActiveMesh:SetAttribute("Choppiness", Value)
+		end
+
+		if TargetSettings.WindDirection then
+			local Start = StartSettings.WindDirection
+			local Target = TargetSettings.WindDirection
+			local Diff = (Target - Start + 180) % 360 - 180
+			local Value = Start + Diff * Alpha
+			ActiveMesh:SetAttribute("WindDirection", Value)
+		end
+
+		if Alpha >= 1 then
+			local ConnectionToStop = TweenConnection
+			if ConnectionToStop then
+				ConnectionToStop:Disconnect()
+				ActiveTrove:Remove(ConnectionToStop)
+			end
+		end
+	end)
+
+	ActiveTrove:Add(TweenConnection :: RBXScriptConnection)
+	return TweenConnection
+end
+
+function OceanSettings.TweenToPreset(PresetName: string, Duration: number): RBXScriptConnection?
+	local Preset = PRESETS[PresetName]
+	if not Preset then
+		warn("[OceanSettings] Unknown preset:", PresetName)
+		return nil
+	end
+
+	local TargetSettings: PresetSettings = {
+		Intensity = Preset.Intensity,
+		Speed = Preset.Speed,
+		Choppiness = Preset.Choppiness,
+		WindDirection = Preset.WindDirection,
+	}
+
+	return OceanSettings.TweenTo(TargetSettings, Duration)
+end
+
+function OceanSettings.GetPresets(): {[string]: PresetSettings}
+	return PRESETS
+end
+
+function OceanSettings.Destroy(): ()
+	if SettingsTrove then
+		SettingsTrove:Destroy()
+		SettingsTrove = nil
+	end
+	OceanMesh = nil
+	ComputedWaves = {}
 end
 
 return OceanSettings

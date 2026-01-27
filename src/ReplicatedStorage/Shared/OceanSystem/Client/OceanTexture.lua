@@ -1,32 +1,26 @@
 --!strict
---[[
-    OceanTexture
-    Cycles through pre-made MaterialVariants for animated ocean textures.
-
-    Setup:
-    1. Run the CreateOceanMaterialVariants command bar script first
-    2. Set your ocean mesh's Material to Water (or your BaseMaterial)
-    3. Call OceanTexture.new(OceanMesh, Config)
-]]
 
 local ContentProvider = game:GetService("ContentProvider")
 local MaterialService = game:GetService("MaterialService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Trove = require(ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Trove"))
+
 local DEFAULT_FRAME_RATE = 24
 local DEFAULT_FOLDER_NAME = "OceanMaterialVariants"
+local DEFAULT_DECAL_FOLDER = "WaterNormalMaps"
+
+export type OceanTextureConfig = {
+	FrameRate: number?,
+	FolderName: string?,
+	DecalFolder: string?,
+}
 
 local OceanTexture = {}
 OceanTexture.__index = OceanTexture
 
-export type OceanTextureConfig = {
-    FrameRate: number?,
-    FolderName: string?,
-    DecalFolder: string?,
-}
-
-export type OceanTexture = {
+export type OceanTexture = typeof(setmetatable({} :: {
     OceanMesh: MeshPart,
     Variants: {MaterialVariant},
     VariantNames: {string},
@@ -34,168 +28,132 @@ export type OceanTexture = {
     FrameRate: number,
     StartTime: number,
     Running: boolean,
-    Connection: RBXScriptConnection?,
     _DecalFolderName: string,
-}
+    _Trove: typeof(Trove.new()),
+}, OceanTexture))
 
-type _OceanTexture = typeof(setmetatable({}, OceanTexture))
+function OceanTexture.new(OceanMesh: MeshPart, Config: OceanTextureConfig?): OceanTexture
+	local ResolvedConfig = Config or {} :: OceanTextureConfig
 
---[[
-    Create a new OceanTexture controller.
+	local self = setmetatable({}, OceanTexture) :: any
 
-    Parameters:
-        OceanMesh: MeshPart - The ocean plane mesh
-        Config: OceanTextureConfig? - Optional configuration
+	self.OceanMesh = OceanMesh
+	self.Variants = {}
+	self.VariantNames = {}
+	self.CurrentFrameIndex = 1
+	self.FrameRate = ResolvedConfig.FrameRate or DEFAULT_FRAME_RATE
+	self.StartTime = 0
+	self.Running = false
+	self._Trove = Trove.new()
 
-    Returns:
-        OceanTexture instance
-]]
-function OceanTexture.new(OceanMesh: MeshPart, Config: OceanTextureConfig?): _OceanTexture
-    local ResolvedConfig = Config or {} :: OceanTextureConfig
+	local FolderName = ResolvedConfig.FolderName or DEFAULT_FOLDER_NAME
+	local DecalFolderName = ResolvedConfig.DecalFolder or DEFAULT_DECAL_FOLDER
 
-    local self = setmetatable({}, OceanTexture) :: _OceanTexture
+	self._DecalFolderName = DecalFolderName
+	self:_LoadVariantNames(FolderName)
 
-    self.OceanMesh = OceanMesh
-    self.Variants = {}
-    self.VariantNames = {}
-    self.CurrentFrameIndex = 1
-    self.FrameRate = ResolvedConfig.FrameRate or DEFAULT_FRAME_RATE
-    self.StartTime = 0
-    self.Running = false
-    self.Connection = nil
-
-    local FolderName = ResolvedConfig.FolderName or DEFAULT_FOLDER_NAME
-    local DecalFolderName = ResolvedConfig.DecalFolder or "WaterNormalMaps"
-
-    self._DecalFolderName = DecalFolderName
-    self:_LoadVariantNames(FolderName)
-
-    return self
+	return self
 end
 
---[[
-    Load variant names from the MaterialService folder.
-]]
-function OceanTexture:_LoadVariantNames(FolderName: string)
-    local VariantFolder = MaterialService:FindFirstChild(FolderName)
+function OceanTexture._LoadVariantNames(self: OceanTexture, FolderName: string): ()
+	local VariantFolder = MaterialService:FindFirstChild(FolderName)
 
-    if not VariantFolder then
-        warn("[OceanTexture] MaterialVariant folder not found: MaterialService/" .. FolderName)
-        return
-    end
+	if not VariantFolder then
+		warn("[OceanTexture] MaterialVariant folder not found: MaterialService/" .. FolderName)
+		return
+	end
 
-    local Variants = {}
-    for _, Child in pairs(VariantFolder:GetChildren()) do
-        if Child:IsA("MaterialVariant") then
-            table.insert(Variants, Child)
-        end
-    end
+	local Variants: {MaterialVariant} = {}
+	for _, Child in VariantFolder:GetChildren() do
+		if Child:IsA("MaterialVariant") then
+			table.insert(Variants, Child)
+		end
+	end
 
-    table.sort(Variants, function(A, B)
-        local NumA = tonumber(A.Name) or 0
-        local NumB = tonumber(B.Name) or 0
-        return NumA < NumB
-    end)
+	table.sort(Variants, function(VariantA, VariantB)
+		local NumberA = tonumber(VariantA.Name) or 0
+		local NumberB = tonumber(VariantB.Name) or 0
+		return NumberA < NumberB
+	end)
 
-    for _, Variant in ipairs(Variants) do
-        table.insert(self.Variants, Variant)
-        table.insert(self.VariantNames, Variant.Name)
-    end
+	for _, Variant in Variants do
+		table.insert(self.Variants, Variant)
+		table.insert(self.VariantNames, Variant.Name)
+	end
 end
 
---[[
-    Preload all textures from the decal folder.
-    Call this before Start() to avoid hitching during animation.
-]]
-function OceanTexture:Preload()
-    local DecalFolder = ReplicatedStorage:FindFirstChild(self._DecalFolderName, true)
+function OceanTexture.Preload(self: OceanTexture): ()
+	local DecalFolder = ReplicatedStorage:FindFirstChild(self._DecalFolderName)
+	if not DecalFolder then
+		return
+	end
 
-    if not DecalFolder then
-        warn("[OceanTexture] Decal folder not found: ReplicatedStorage/" .. self._DecalFolderName)
-        return
-    end
+	local AssetsToPreload: {Instance} = {}
+	for _, Decal in DecalFolder:GetChildren() do
+		if Decal:IsA("Decal") or Decal:IsA("Texture") then
+			table.insert(AssetsToPreload, Decal)
+		end
+	end
 
-    local Decals = DecalFolder:GetChildren()
-
-    ContentProvider:PreloadAsync(Decals)
+	if #AssetsToPreload > 0 then
+		ContentProvider:PreloadAsync(AssetsToPreload)
+	end
 end
 
---[[
-    Main update loop.
-    Uses absolute time to calculate frame index, avoiding floating-point accumulation drift.
-]]
-function OceanTexture:_Update()
-    local VariantCount = #self.VariantNames
-    if VariantCount == 0 then
-        return
-    end
+function OceanTexture._Update(self: OceanTexture): ()
+	if #self.Variants == 0 then
+		return
+	end
 
-    local Elapsed = os.clock() - self.StartTime
-    local FrameIndex = math.floor(Elapsed * self.FrameRate) % VariantCount + 1
+	local Elapsed = os.clock() - self.StartTime
+	local FrameIndex = math.floor(Elapsed * self.FrameRate) % #self.Variants + 1
 
-    if FrameIndex ~= self.CurrentFrameIndex then
-        self.CurrentFrameIndex = FrameIndex
-        self.OceanMesh.MaterialVariant = self.VariantNames[FrameIndex]
-    end
+	if FrameIndex ~= self.CurrentFrameIndex then
+		self.CurrentFrameIndex = FrameIndex
+		local VariantName = self.VariantNames[FrameIndex]
+		if VariantName then
+			self.OceanMesh.MaterialVariant = VariantName
+		end
+	end
 end
 
---[[
-    Start the animation.
-]]
-function OceanTexture:Start()
-    if self.Running then
-        warn("[OceanTexture] Already running")
-        return
-    end
+function OceanTexture.Start(self: OceanTexture): ()
+	if self.Running then
+		warn("[OceanTexture] Already running")
+		return
+	end
 
-    if #self.VariantNames == 0 then
-        warn("[OceanTexture] No MaterialVariants loaded, animation disabled")
-        return
-    end
+	if #self.Variants == 0 then
+		warn("[OceanTexture] No variants loaded, cannot start")
+		return
+	end
 
-    self.Running = true
-    self.StartTime = os.clock()
-    self.CurrentFrameIndex = 1
-    self.OceanMesh.MaterialVariant = self.VariantNames[1]
+	self.Running = true
+	self.StartTime = os.clock()
 
-    self.Connection = RunService.RenderStepped:Connect(function()
-        self:_Update()
-    end)
+	self._Trove:Connect(RunService.RenderStepped, function()
+		self:_Update()
+	end)
 end
 
---[[
-    Stop the animation.
-]]
-function OceanTexture:Stop()
-    if not self.Running then
-        return
-    end
+function OceanTexture.Stop(self: OceanTexture): ()
+	if not self.Running then
+		return
+	end
 
-    self.Running = false
-
-    local Connection = self.Connection :: RBXScriptConnection?
-
-    if Connection then
-        Connection:Disconnect()
-        self.Connection = nil
-    end
+	self.Running = false
+	self._Trove:Clean()
 end
 
---[[
-    Set the animation frame rate.
-
-    Parameters:
-        NewFrameRate: number
-]]
-function OceanTexture:SetFrameRate(NewFrameRate: number)
-    self.FrameRate = math.clamp(NewFrameRate, 1, 120)
+function OceanTexture.SetFrameRate(self: OceanTexture, FrameRate: number): ()
+	self.FrameRate = math.max(1, FrameRate)
 end
 
---[[
-    Clean up.
-]]
-function OceanTexture:Destroy()
-    self:Stop()
+function OceanTexture.Destroy(self: OceanTexture): ()
+	self:Stop()
+	self._Trove:Destroy()
+	self.Variants = {}
+	self.VariantNames = {}
 end
 
 return OceanTexture

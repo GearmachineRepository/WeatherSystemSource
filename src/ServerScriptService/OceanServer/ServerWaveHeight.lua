@@ -1,76 +1,26 @@
---[[
-    ServerWaveHeight
-    Server-side wave height calculations (doesn't need the mesh).
-    Place in: ServerScriptService/OceanServer (as a Script)
-
-    The server doesn't render the mesh, so it uses the raw Gerstner formula.
-    This is slightly less accurate than the client's triangle interpolation,
-    but the difference is negligible for gameplay purposes.
-
-    Use this for:
-    - Server-authoritative boat physics
-    - Damage from underwater collisions
-    - AI ship navigation
-]]
+--!strict
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Wait for modules
-local OceanSystem = ReplicatedStorage.Shared:WaitForChild("OceanSystem")
+local OceanSystem = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("OceanSystem")
 local GerstnerWave = require(OceanSystem.Shared.GerstnerWave)
 
 local ServerWaveHeight = {}
 
---[[
-    Get wave height at a position (server-side, uses formula directly).
-
-    Parameters:
-        X: number, Z: number
-
-    Returns:
-        number - The Y height
-]]
-function ServerWaveHeight.GetHeight(X, Z)
-	return GerstnerWave.GetIdealHeight(X, Z)
+function ServerWaveHeight.GetHeight(PositionX: number, PositionZ: number): number
+	return GerstnerWave.GetIdealHeight(PositionX, PositionZ)
 end
 
---[[
-    Get wave height at a Vector3 position.
-
-    Parameters:
-        Position: Vector3
-
-    Returns:
-        number
-]]
-function ServerWaveHeight.GetHeightAtPosition(Position)
+function ServerWaveHeight.GetHeightAtPosition(Position: Vector3): number
 	return GerstnerWave.GetIdealHeight(Position.X, Position.Z)
 end
 
---[[
-    Check if a position is underwater.
-
-    Parameters:
-        Position: Vector3
-
-    Returns:
-        boolean
-]]
-function ServerWaveHeight.IsUnderwater(Position)
+function ServerWaveHeight.IsUnderwater(Position: Vector3): boolean
 	local Height = ServerWaveHeight.GetHeight(Position.X, Position.Z)
 	return Position.Y < Height
 end
 
---[[
-    Get depth below surface.
-
-    Parameters:
-        Position: Vector3
-
-    Returns:
-        number (positive if underwater)
-]]
-function ServerWaveHeight.GetDepth(Position)
+function ServerWaveHeight.GetDepth(Position: Vector3): number
 	local Height = ServerWaveHeight.GetHeight(Position.X, Position.Z)
 	return Height - Position.Y
 end

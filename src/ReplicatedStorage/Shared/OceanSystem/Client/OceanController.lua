@@ -1,48 +1,35 @@
 --!strict
---[[
-    OceanController
-    Client-side controller that updates ocean mesh bones.
-
-    Uses GerstnerWave module for wave calculations to ensure
-    server and client use identical math.
-]]
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
-local WaveConfig = require(script.Parent.Parent.Shared.WaveConfig)
+local Trove = require(ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Trove"))
+local OceanConfig = require(script.Parent.Parent.Shared.OceanConfig)
+local OceanSettings = require(script.Parent.Parent.Shared.OceanSettings)
 local GerstnerWave = require(script.Parent.Parent.Shared.GerstnerWave)
 local WaveHeightSampler = require(script.Parent.Parent.Shared.WaveHeightSampler)
 
 local OceanController = {}
 OceanController.__index = OceanController
 
-export type OceanController = {
+export type OceanController = typeof(setmetatable({} :: {
 	OceanMesh: MeshPart,
 	Bones: {Bone},
 	Running: boolean,
-	Connection: RBXScriptConnection?,
-	HeightSampler: typeof(WaveHeightSampler.new(nil :: any)),
-}
+	_Trove: typeof(Trove.new()),
+	HeightSampler: WaveHeightSampler.WaveHeightSampler,
+}, OceanController))
 
---[[
-    Create a new OceanController.
-
-    Parameters:
-        OceanMesh: MeshPart - The skinned mesh with bones (workspace.Ocean.Plane)
-
-    Returns:
-        OceanController instance
-]]
-function OceanController.new(OceanMesh: MeshPart)
-	local self = setmetatable({}, OceanController)
+function OceanController.new(OceanMesh: MeshPart): OceanController
+	local self = setmetatable({}, OceanController) :: any
 
 	self.OceanMesh = OceanMesh
 	self.Bones = {}
 	self.Running = false
-	self.Connection = nil
+	self._Trove = Trove.new()
 
-	for _, Child in pairs(OceanMesh:GetDescendants()) do
+	for _, Child in OceanMesh:GetDescendants() do
 		if Child:IsA("Bone") then
 			table.insert(self.Bones, Child)
 		end
@@ -53,23 +40,23 @@ function OceanController.new(OceanMesh: MeshPart)
 	return self
 end
 
---[[
-    Update all bones with wave displacement.
-]]
-function OceanController:_Update(): ()
+function OceanController._Update(self: OceanController): ()
 	local Time = GerstnerWave.GetSyncedTime()
+	local Waves = OceanSettings.GetWaves()
 
 	local LocalPlayer = Players.LocalPlayer
 	local Character = LocalPlayer and LocalPlayer.Character
-	local MaxDistance = WaveConfig.MaxUpdateDistance
+	local MaxDistance = OceanConfig.MAX_UPDATE_DISTANCE
 	local MaxDistanceSquared = MaxDistance * MaxDistance
 
 	local CharacterPosition: Vector3? = nil
 	if Character and Character.PrimaryPart then
-		CharacterPosition = Character.PrimaryPart.Position
+		local PrimaryPart = Character.PrimaryPart :: BasePart?
+		if not PrimaryPart then return end
+		CharacterPosition = PrimaryPart.Position
 	end
 
-	for _, Bone in ipairs(self.Bones) do
+	for _, Bone in self.Bones do
 		local WorldPosition = Bone.WorldPosition :: Vector3
 
 		local ShouldUpdate = true
@@ -82,7 +69,7 @@ function OceanController:_Update(): ()
 		if ShouldUpdate then
 			local TotalDisplacement = Vector3.zero
 
-			for _, Wave in ipairs(WaveConfig.Waves) do
+			for _, Wave in Waves do
 				local Displacement = GerstnerWave.CalculateSingleWave(
 					WorldPosition,
 					Wave.Wavelength,
@@ -101,10 +88,7 @@ function OceanController:_Update(): ()
 	end
 end
 
---[[
-    Start the wave animation loop.
-]]
-function OceanController:Start(): ()
+function OceanController.Start(self: OceanController): ()
 	if self.Running then
 		warn("[OceanController] Already running")
 		return
@@ -112,7 +96,7 @@ function OceanController:Start(): ()
 
 	self.Running = true
 
-	self.Connection = RunService.RenderStepped:Connect(function()
+	self._Trove:Connect(RunService.RenderStepped, function()
 		if not game:IsLoaded() then
 			return
 		end
@@ -120,50 +104,31 @@ function OceanController:Start(): ()
 	end)
 end
 
---[[
-    Stop the wave animation loop.
-]]
-function OceanController:Stop(): ()
+function OceanController.Stop(self: OceanController): ()
 	if not self.Running then
 		return
 	end
 
 	self.Running = false
-	local Connection = self.Connection :: RBXScriptConnection?
+	self._Trove:Clean()
 
-	if Connection then
-		Connection:Disconnect()
-		self.Connection = nil
-	end
-
-	for _, Bone in ipairs(self.Bones) do
+	for _, Bone in self.Bones do
 		Bone.Transform = CFrame.new()
 	end
 end
 
---[[
-    Get the WaveHeightSampler instance.
-]]
-function OceanController:GetHeightSampler()
+function OceanController.GetHeightSampler(self: OceanController): WaveHeightSampler.WaveHeightSampler
 	return self.HeightSampler
 end
 
---[[
-    Get wave height at a position (convenience function).
-]]
-function OceanController:GetWaveHeight(X: number, Z: number): number
-	return self.HeightSampler:GetHeight(X, Z)
+function OceanController.GetWaveHeight(self: OceanController, PositionX: number, PositionZ: number): number
+	return self.HeightSampler:GetHeight(PositionX, PositionZ)
 end
 
--- Add after GetWaveHeight:
---[[
-    Clean up the controller and all connections.
-]]
-function OceanController:Destroy(): ()
+function OceanController.Destroy(self: OceanController): ()
 	self:Stop()
+	self._Trove:Destroy()
 	self.Bones = {}
-	self.OceanMesh = nil
-	self.HeightSampler = nil
 end
 
 return OceanController

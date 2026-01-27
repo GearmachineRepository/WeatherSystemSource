@@ -1,33 +1,33 @@
---[[
-    BoneGrid
-    Manages the bone grid structure for O(1) lookups.
+--!strict
 
-    This version auto-detects the grid layout from bone positions,
-    so it works regardless of how bones are named (1, 2, 3... or Bone_X_Z, etc.)
-]]
-
-local WaveConfig = require(script.Parent.WaveConfig)
+local OceanConfig = require(script.Parent.OceanConfig)
 
 local BoneGrid = {}
 BoneGrid.__index = BoneGrid
 
---[[
-    Create a new BoneGrid from an ocean mesh.
+export type BoneGrid = typeof(setmetatable({} :: {
+	Mesh: MeshPart,
+	Grid: { [number]: { [number]: Bone } },
+	OriginalPositions: { [Bone]: Vector3 },
+	Bones: { Bone },
+	GridSpacing: number,
+	GridOrigin: Vector3,
+	MinX: number,
+	MaxX: number,
+	MinZ: number,
+	MaxZ: number,
+	GridSizeX: number,
+	GridSizeZ: number,
+}, BoneGrid))
 
-    Parameters:
-        OceanMesh: MeshPart/Part - The mesh with bones
-
-    Returns:
-        BoneGrid instance
-]]
-function BoneGrid.new(OceanMesh)
-	local self = setmetatable({}, BoneGrid)
+function BoneGrid.new(OceanMesh: MeshPart): BoneGrid
+	local self = setmetatable({}, BoneGrid) :: any
 
 	self.Mesh = OceanMesh
-	self.Grid = {}              -- 2D array: Grid[GridX][GridZ] = Bone
-	self.OriginalPositions = {} -- Cache of original bone positions
-	self.Bones = {}             -- Flat list of all bones
-	self.GridSpacing = 0        -- Auto-detected spacing
+	self.Grid = {}
+	self.OriginalPositions = {}
+	self.Bones = {}
+	self.GridSpacing = 0
 	self.GridOrigin = Vector3.new(0, 0, 0)
 	self.MinX = math.huge
 	self.MaxX = -math.huge
@@ -43,88 +43,73 @@ function BoneGrid.new(OceanMesh)
 	return self
 end
 
---[[
-    Collect all bones and cache original positions.
-]]
-function BoneGrid:_CollectBones()
+function BoneGrid._CollectBones(self: BoneGrid): ()
 	for _, Child in pairs(self.Mesh:GetDescendants()) do
 		if Child:IsA("Bone") then
-			table.insert(self.Bones, Child)
-			self.OriginalPositions[Child] = Child.WorldPosition
+			local BoneInstance = Child :: Bone
+			table.insert(self.Bones, BoneInstance)
+			self.OriginalPositions[BoneInstance] = BoneInstance.WorldPosition
 
-			-- Track bounds
-			local Pos = Child.WorldPosition
-			self.MinX = math.min(self.MinX, Pos.X)
-			self.MaxX = math.max(self.MaxX, Pos.X)
-			self.MinZ = math.min(self.MinZ, Pos.Z)
-			self.MaxZ = math.max(self.MaxZ, Pos.Z)
+			local Position = Child.WorldPosition
+			self.MinX = math.min(self.MinX, Position.X)
+			self.MaxX = math.max(self.MaxX, Position.X)
+			self.MinZ = math.min(self.MinZ, Position.Z)
+			self.MaxZ = math.max(self.MaxZ, Position.Z)
 		end
 	end
 end
 
---[[
-    Auto-detect the grid spacing and layout from bone positions.
-]]
-function BoneGrid:_DetectGridLayout()
+function BoneGrid._DetectGridLayout(self: BoneGrid): ()
 	if #self.Bones < 2 then
 		warn("[BoneGrid] Not enough bones to detect grid layout")
-		self.GridSpacing = WaveConfig.GridSpacing
+		self.GridSpacing = OceanConfig.GRID_SPACING
 		return
 	end
 
-	-- Sort bones by X position to find spacing
-	local SortedByX = {}
-	for _, Bone in ipairs(self.Bones) do
+	local SortedByX: { Vector3 } = {}
+	for _, Bone in self.Bones do
 		table.insert(SortedByX, self.OriginalPositions[Bone])
 	end
-	table.sort(SortedByX, function(A, B)
-		return A.X < B.X
+
+	table.sort(SortedByX, function(PositionA: Vector3, PositionB: Vector3): boolean
+		return PositionA.X < PositionB.X
 	end)
 
-	-- Find the smallest non-zero X gap (this is likely our grid spacing)
 	local MinGap = math.huge
-	for I = 2, #SortedByX do
-		local Gap = math.abs(SortedByX[I].X - SortedByX[I - 1].X)
-		if Gap > 0.1 then -- Ignore tiny gaps (same column)
+	for Index = 2, #SortedByX do
+		local Gap = math.abs(SortedByX[Index].X - SortedByX[Index - 1].X)
+		if Gap > 0.1 then
 			MinGap = math.min(MinGap, Gap)
 		end
 	end
 
-	-- Use detected spacing or fall back to config
 	if MinGap < math.huge and MinGap > 0.1 then
 		self.GridSpacing = MinGap
 	else
-		self.GridSpacing = WaveConfig.GridSpacing
+		self.GridSpacing = OceanConfig.GRID_SPACING
 	end
 
-	-- Set grid origin to the minimum corner
-	self.GridOrigin = Vector3.new(self.MinX, WaveConfig.BaseWaterHeight, self.MinZ)
-
-	-- Calculate grid dimensions
+	self.GridOrigin = Vector3.new(self.MinX, OceanConfig.BASE_WATER_HEIGHT, self.MinZ)
 	self.GridSizeX = math.ceil((self.MaxX - self.MinX) / self.GridSpacing) + 1
 	self.GridSizeZ = math.ceil((self.MaxZ - self.MinZ) / self.GridSpacing) + 1
 end
 
---[[
-    Build the grid structure by placing bones into grid cells based on position.
-]]
-function BoneGrid:_BuildGrid()
-	for _, Bone in ipairs(self.Bones) do
-		local Pos = self.OriginalPositions[Bone]
-		local GridX, GridZ = self:WorldToGrid(Pos)
+function BoneGrid._BuildGrid(self: BoneGrid): ()
+	for _, Bone in self.Bones do
+		local Position = self.OriginalPositions[Bone]
+		local GridX, GridZ = self:WorldToGrid(Position)
 
 		if not self.Grid[GridX] then
 			self.Grid[GridX] = {}
 		end
 
-		-- If there's already a bone in this cell, keep the one closest to cell center
 		if self.Grid[GridX][GridZ] then
-			local ExistingPos = self.OriginalPositions[self.Grid[GridX][GridZ]]
+			local ExistingPosition = self.OriginalPositions[self.Grid[GridX][GridZ]]
 			local CellCenter = self:GridToWorld(GridX, GridZ)
-			local ExistingDist = (ExistingPos - CellCenter).Magnitude
-			local NewDist = (Pos - CellCenter).Magnitude
+			local ExistingDistance = (ExistingPosition - CellCenter).Magnitude
+			local NewDistance = (Position - CellCenter).Magnitude
 
-			if NewDist < ExistingDist then
+			if NewDistance < ExistingDistance then
 				self.Grid[GridX][GridZ] = Bone
 			end
 		else
@@ -133,32 +118,14 @@ function BoneGrid:_BuildGrid()
 	end
 end
 
---[[
-    Convert a world position to grid indices.
-
-    Parameters:
-        WorldPosition: Vector3
-
-    Returns:
-        GridX: number, GridZ: number
-]]
-function BoneGrid:WorldToGrid(WorldPosition)
+function BoneGrid.WorldToGrid(self: BoneGrid, WorldPosition: Vector3): (number, number)
 	local Relative = WorldPosition - self.GridOrigin
 	local GridX = math.floor(Relative.X / self.GridSpacing + 0.5)
 	local GridZ = math.floor(Relative.Z / self.GridSpacing + 0.5)
 	return GridX, GridZ
 end
 
---[[
-    Convert grid indices to world position (center of cell).
-
-    Parameters:
-        GridX: number, GridZ: number
-
-    Returns:
-        Vector3
-]]
-function BoneGrid:GridToWorld(GridX, GridZ)
+function BoneGrid.GridToWorld(self: BoneGrid, GridX: number, GridZ: number): Vector3
 	return self.GridOrigin + Vector3.new(
 		GridX * self.GridSpacing,
 		0,
@@ -166,33 +133,14 @@ function BoneGrid:GridToWorld(GridX, GridZ)
 	)
 end
 
---[[
-    Get a bone at specific grid coordinates.
-
-    Parameters:
-        GridX: number, GridZ: number
-
-    Returns:
-        Bone or nil
-]]
-function BoneGrid:GetBoneAt(GridX, GridZ)
+function BoneGrid.GetBoneAt(self: BoneGrid, GridX: number, GridZ: number): Bone?
 	if self.Grid[GridX] then
 		return self.Grid[GridX][GridZ]
 	end
 	return nil
 end
 
---[[
-    Get the four bones forming the quad that contains a world position.
-
-    Parameters:
-        WorldPosition: Vector3
-
-    Returns:
-        TopLeft, TopRight, BottomLeft, BottomRight (Bones, may be nil if at edge)
-]]
-function BoneGrid:GetSurroundingBones(WorldPosition)
-	-- Find which cell we're in
+function BoneGrid.GetSurroundingBones(self: BoneGrid, WorldPosition: Vector3): (Bone?, Bone?, Bone?, Bone?)
 	local Relative = WorldPosition - self.GridOrigin
 	local FloatX = Relative.X / self.GridSpacing
 	local FloatZ = Relative.Z / self.GridSpacing
@@ -208,78 +156,37 @@ function BoneGrid:GetSurroundingBones(WorldPosition)
 	return TopLeft, TopRight, BottomLeft, BottomRight
 end
 
---[[
-    Determine which triangle within a quad contains the position.
-    Assumes triangulation pattern:
-        TL----TR
-        | \    |
-        |  \   |
-        |   \  |
-        BL----BR
-
-    Parameters:
-        WorldPosition: Vector3
-        TopLeft, TopRight, BottomLeft, BottomRight: Bones
-
-    Returns:
-        BoneA, BoneB, BoneC (the three bones forming the triangle)
-]]
-function BoneGrid:GetTriangleForPosition(WorldPosition, TopLeft, TopRight, BottomLeft, BottomRight)
+function BoneGrid.GetTriangleForPosition(
+	self: BoneGrid,
+	WorldPosition: Vector3,
+	TopLeft: Bone,
+	TopRight: Bone,
+	BottomLeft: Bone,
+	BottomRight: Bone
+): (Bone, Bone, Bone)
 	local Relative = WorldPosition - self.GridOrigin
 	local FloatX = Relative.X / self.GridSpacing
 	local FloatZ = Relative.Z / self.GridSpacing
 
-	-- Get position within cell (0 to 1)
-	local LocalX = FloatX - math.floor(FloatX)
-	local LocalZ = FloatZ - math.floor(FloatZ)
+	local LocalX = math.clamp(FloatX - math.floor(FloatX), 0, 1)
+	local LocalZ = math.clamp(FloatZ - math.floor(FloatZ), 0, 1)
 
-	-- Clamp to valid range
-	LocalX = math.clamp(LocalX, 0, 1)
-	LocalZ = math.clamp(LocalZ, 0, 1)
-
-	-- Determine which triangle based on the diagonal
 	if LocalX + LocalZ < 1 then
-		-- Upper-left triangle
 		return TopLeft, TopRight, BottomLeft
 	else
-		-- Lower-right triangle
 		return TopRight, BottomRight, BottomLeft
 	end
 end
 
---[[
-    Get the original (rest) position of a bone.
-
-    Parameters:
-        Bone: Bone
-
-    Returns:
-        Vector3
-]]
-function BoneGrid:GetOriginalPosition(Bone)
+function BoneGrid.GetOriginalPosition(self: BoneGrid, Bone: Bone): Vector3
 	return self.OriginalPositions[Bone]
 end
 
---[[
-    Get all bones (for iteration).
-
-    Returns:
-        Array of Bones
-]]
-function BoneGrid:GetAllBones()
+function BoneGrid.GetAllBones(self: BoneGrid): {Bone}
 	return self.Bones
 end
 
---[[
-    Check if a position is within the grid bounds.
-
-    Parameters:
-        WorldPosition: Vector3
-
-    Returns:
-        boolean
-]]
-function BoneGrid:IsInBounds(WorldPosition)
+function BoneGrid.IsInBounds(self: BoneGrid, WorldPosition: Vector3): boolean
 	local Relative = WorldPosition - self.GridOrigin
 	local FloatX = Relative.X / self.GridSpacing
 	local FloatZ = Relative.Z / self.GridSpacing
@@ -288,13 +195,7 @@ function BoneGrid:IsInBounds(WorldPosition)
 		and FloatZ >= 0 and FloatZ < self.GridSizeZ - 1
 end
 
---[[
-    Get the grid spacing.
-
-    Returns:
-        number
-]]
-function BoneGrid:GetSpacing()
+function BoneGrid.GetSpacing(self: BoneGrid): number
 	return self.GridSpacing
 end
 

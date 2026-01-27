@@ -1,11 +1,4 @@
 --!strict
---[[
-    OceanClientVisuals
-    Client-side ocean visuals only - mesh animation and textures.
-    Boat physics are handled server-side.
-
-    Place in: StarterPlayer/StarterPlayerScripts
-]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -13,21 +6,20 @@ local OceanSystem = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Ocean
 local OceanController = require(OceanSystem.Client.OceanController)
 local OceanTexture = require(OceanSystem.Client.OceanTexture)
 local OceanSettings = require(OceanSystem.Shared.OceanSettings)
-local WaveConfig = require(OceanSystem.Shared.WaveConfig)
 
 local Ocean = workspace:WaitForChild("Ocean", 30)
 if not Ocean then
-	warn("[OceanClientVisuals] Ocean folder not found in workspace")
+	warn("[OceanClient] Ocean folder not found in workspace")
 	return
 end
 
-local OceanMesh = Ocean:WaitForChild("Plane", 10)
+local OceanMesh = Ocean:WaitForChild("Plane", 10) :: MeshPart
 if not OceanMesh then
-	warn("[OceanClientVisuals] Plane not found in workspace/Ocean")
+	warn("[OceanClient] Plane not found in workspace/Ocean")
 	return
 end
 
-OceanSettings:Initialize(OceanMesh, WaveConfig)
+OceanSettings.Initialize(OceanMesh)
 
 local Controller = OceanController.new(OceanMesh)
 Controller:Start()
@@ -39,5 +31,3 @@ local TextureController = OceanTexture.new(OceanMesh, {
 })
 TextureController:Preload()
 TextureController:Start()
-
-print("[OceanClientVisuals] Ocean visuals started")
