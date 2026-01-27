@@ -108,7 +108,7 @@ end
     Call this before Start() to avoid hitching during animation.
 ]]
 function OceanTexture:Preload()
-    local DecalFolder = ReplicatedStorage:FindFirstChild(self._DecalFolderName)
+    local DecalFolder = ReplicatedStorage:FindFirstChild(self._DecalFolderName, true)
 
     if not DecalFolder then
         warn("[OceanTexture] Decal folder not found: ReplicatedStorage/" .. self._DecalFolderName)
