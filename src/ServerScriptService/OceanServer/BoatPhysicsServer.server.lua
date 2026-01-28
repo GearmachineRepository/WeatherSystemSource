@@ -40,6 +40,10 @@ local OWNERSHIP_RELEASE_DELAY = 1.0
 
 local MOVING_SPEED_THRESHOLD = 0.25
 
+local WAVE_CALCULATION_RANGE = 300
+local WAVE_CALCULATION_RANGE_SQUARED = WAVE_CALCULATION_RANGE * WAVE_CALCULATION_RANGE
+local PLAYER_POSITION_UPDATE_INTERVAL = 0.5
+
 type BoatSettings = {
 	MaxForwardSpeed: number,
 	MaxReverseSpeed: number,
@@ -67,9 +71,17 @@ type BoatData = {
 	Trove: typeof(Trove.new()),
 	LastOwner: Player?,
 	LastOccupantChangeTime: number,
+	WavesActive: boolean,
+}
+
+type CachedPlayerPosition = {
+	X: number,
+	Z: number,
 }
 
 local ActiveBoats: {[Model]: BoatData} = {}
+local CachedPlayerPositions: {CachedPlayerPosition} = {}
+local PlayerPositionUpdateAccumulator = 0
 local MainTrove = Trove.new()
 
 local function GetWaveHeight(PositionX: number, PositionZ: number): number
@@ -130,7 +142,6 @@ local function DisableVehicleSeatPhysics(Seat: VehicleSeat): ()
 	Seat.TurnSpeed = 0
 end
 
-
 local function SetNetworkOwnership(Data: BoatData): ()
 	local Seat = Data.Seat
 	if not Seat then
@@ -156,7 +167,6 @@ local function SetNetworkOwnership(Data: BoatData): ()
 		return
 	end
 
-	-- No occupant: keep last owner while slowing down, then release to server later
 	if Data.CurrentSpeed > OWNERSHIP_RELEASE_SPEED then
 		local LastOwner = Data.LastOwner
 		if LastOwner and LastOwner.Parent then
@@ -204,6 +214,38 @@ local function CreateBodyMovers(PrimaryPart: BasePart, BoatTrove: typeof(Trove.n
 	return Position, Gyro, Velocity, AngularVelocity
 end
 
+local function UpdateCachedPlayerPositions(): ()
+	table.clear(CachedPlayerPositions)
+
+	for _, Player in Players:GetPlayers() do
+		local Character = Player.Character
+		if Character then
+			local RootPart = Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if RootPart then
+				local Position = RootPart.Position
+				table.insert(CachedPlayerPositions, {
+					X = Position.X,
+					Z = Position.Z,
+				})
+			end
+		end
+	end
+end
+
+local function IsAnyPlayerNearby(BoatX: number, BoatZ: number): boolean
+	for _, PlayerPos in CachedPlayerPositions do
+		local DeltaX = BoatX - PlayerPos.X
+		local DeltaZ = BoatZ - PlayerPos.Z
+		local DistanceSquared = DeltaX * DeltaX + DeltaZ * DeltaZ
+
+		if DistanceSquared < WAVE_CALCULATION_RANGE_SQUARED then
+			return true
+		end
+	end
+
+	return false
+end
+
 local function UpdateBoatHeight(Data: BoatData): ()
 	local AverageHeight = BuoyUtils.CalculateAverageHeight(Data.Buoys, GetWaveHeight)
 	local TargetHeight = AverageHeight + Data.Settings.HeightOffset
@@ -235,6 +277,28 @@ local function UpdateBoatTilt(Data: BoatData): ()
 	local TiltedCFrame = BaseCFrame * CFrame.Angles(TargetPitch, 0, TargetRoll)
 
 	Data.BodyGyro.CFrame = TiltedCFrame
+end
+
+local function FlattenBoatTilt(Data: BoatData): ()
+	local CurrentCFrame = Data.PrimaryPart.CFrame
+	local LookVector = CurrentCFrame.LookVector
+
+	local FlatLook = Vector3.new(LookVector.X, 0, LookVector.Z)
+	if FlatLook.Magnitude < 0.01 then
+		FlatLook = Vector3.new(0, 0, -1)
+	else
+		FlatLook = FlatLook.Unit
+	end
+
+	local Position = CurrentCFrame.Position
+	local FlatCFrame = CFrame.lookAt(Position, Position + FlatLook)
+
+	Data.BodyGyro.CFrame = FlatCFrame
+end
+
+local function HoldBoatAtCurrentHeight(Data: BoatData): ()
+	local CurrentPosition = Data.PrimaryPart.Position
+	Data.BodyPosition.Position = CurrentPosition
 end
 
 local function UpdateBoatMovement(Data: BoatData, DeltaTime: number): ()
@@ -299,8 +363,23 @@ local function UpdateBoatMovement(Data: BoatData, DeltaTime: number): ()
 end
 
 local function UpdateBoat(Data: BoatData, DeltaTime: number): ()
-	UpdateBoatHeight(Data)
-	UpdateBoatTilt(Data)
+	local BoatPosition = Data.PrimaryPart.Position
+	local ShouldCalculateWaves = IsAnyPlayerNearby(BoatPosition.X, BoatPosition.Z)
+
+	if ShouldCalculateWaves then
+		if not Data.WavesActive then
+			Data.WavesActive = true
+		end
+		UpdateBoatHeight(Data)
+		UpdateBoatTilt(Data)
+	else
+		if Data.WavesActive then
+			Data.WavesActive = false
+			FlattenBoatTilt(Data)
+		end
+		HoldBoatAtCurrentHeight(Data)
+	end
+
 	UpdateBoatMovement(Data, DeltaTime)
 end
 
@@ -360,6 +439,7 @@ local function InitializeBoat(Model: Model): ()
 		Trove = BoatTrove,
 		LastOwner = nil,
 		LastOccupantChangeTime = 0,
+		WavesActive = true,
 	}
 
 	if Seat then
@@ -406,10 +486,10 @@ local function SetupExistingBoats(): ()
 end
 
 local function IsOccupied(Data: BoatData): boolean
-    if not Data.Seat then
-        return false
-    end
-    return Data.Seat.Occupant ~= nil
+	if not Data.Seat then
+		return false
+	end
+	return Data.Seat.Occupant ~= nil
 end
 
 local function GetUpdateInterval(Data: BoatData): number
@@ -425,6 +505,12 @@ local function GetUpdateInterval(Data: BoatData): number
 end
 
 local function OnHeartbeat(DeltaTime: number): ()
+	PlayerPositionUpdateAccumulator += DeltaTime
+	if PlayerPositionUpdateAccumulator >= PLAYER_POSITION_UPDATE_INTERVAL then
+		UpdateCachedPlayerPositions()
+		PlayerPositionUpdateAccumulator = 0
+	end
+
 	for _, Data in pairs(ActiveBoats) do
 		Data.UpdateAccumulator += DeltaTime
 
