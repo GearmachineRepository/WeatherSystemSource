@@ -44,6 +44,11 @@ local WAVE_CALCULATION_RANGE = 300
 local WAVE_CALCULATION_RANGE_SQUARED = WAVE_CALCULATION_RANGE * WAVE_CALCULATION_RANGE
 local PLAYER_POSITION_UPDATE_INTERVAL = 0.5
 
+type ControlInputs = {
+	Throttle: number,
+	Steer: number,
+}
+
 type BoatSettings = {
 	MaxForwardSpeed: number,
 	MaxReverseSpeed: number,
@@ -83,6 +88,35 @@ local ActiveBoats: {[Model]: BoatData} = {}
 local CachedPlayerPositions: {CachedPlayerPosition} = {}
 local PlayerPositionUpdateAccumulator = 0
 local MainTrove = Trove.new()
+
+local function ReadAiInputs(Model: Model): ControlInputs
+	local ThrottleValue = Model:GetAttribute("AiThrottle")
+	local SteerValue = Model:GetAttribute("AiSteer")
+
+	local Throttle = if typeof(ThrottleValue) == "number" then math.clamp(ThrottleValue, -1, 1) else 0
+	local Steer = if typeof(SteerValue) == "number" then math.clamp(SteerValue, -1, 1) else 0
+
+	return {
+		Throttle = Throttle,
+		Steer = Steer,
+	}
+end
+
+local function GetControlInputs(Data: BoatData): ControlInputs
+	local Seat = Data.Seat
+	if Seat and Seat.Occupant ~= nil then
+		return {
+			Throttle = Seat.Throttle,
+			Steer = Seat.Steer,
+		}
+	end
+
+	if CollectionService:HasTag(Data.Model, "Agent") then
+		return ReadAiInputs(Data.Model)
+	end
+
+	return { Throttle = 0, Steer = 0 }
+end
 
 local function GetWaveHeight(PositionX: number, PositionZ: number): number
 	return GerstnerWave.GetIdealHeight(PositionX, PositionZ)
@@ -302,13 +336,9 @@ local function HoldBoatAtCurrentHeight(Data: BoatData): ()
 end
 
 local function UpdateBoatMovement(Data: BoatData, DeltaTime: number): ()
-	local Throttle = 0
-	local Steer = 0
-
-	if Data.Seat then
-		Throttle = Data.Seat.Throttle
-		Steer = Data.Seat.Steer
-	end
+	local Inputs = GetControlInputs(Data)
+	local Throttle = Inputs.Throttle
+	local Steer = Inputs.Steer
 
 	local Settings = Data.Settings
 
