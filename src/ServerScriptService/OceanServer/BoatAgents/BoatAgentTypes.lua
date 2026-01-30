@@ -12,6 +12,56 @@ export type AgentConfig = {
 	ObstacleWeight: number,
 	LookaheadTime: number,
 	MinSeparationDistance: number,
+	AttackCircleRadius: number?,
+	AttackDetectionRange: number?,
+	AttackAutoTarget: boolean?,
+	FerryWaitTime: number?,
+	FerryDepartureDelay: number?,
+	FerryMinPassengers: number?,
+}
+
+export type DockingStateData = {
+	Active: boolean,
+	State: string?,
+	DockPoint: BasePart?,
+	ApproachDistance: number,
+	FinalPosition: Vector3?,
+	StartTime: number,
+}
+
+export type AttackTargetData = {
+	Target: Model?,
+	TargetPart: BasePart?,
+	LastTargetPosition: Vector3?,
+	LastTargetVelocity: Vector3?,
+	TargetStationaryTime: number,
+	CircleAngle: number,
+	CircleDirection: number,
+}
+
+export type FerryPassengerData = {
+	WaitStartTime: number,
+	DepartureTime: number?,
+	PassengerCount: number,
+	AnnouncedDeparture: boolean,
+}
+
+export type RouteData = {
+	Name: string,
+	Waypoints: {any},
+	Loop: boolean,
+}
+
+export type BehaviorState = {
+	Name: string,
+	RouteData: RouteData?,
+	CurrentWaypointIndex: number,
+	RouteDirection: number,
+	DockingState: DockingStateData,
+	AttackData: AttackTargetData?,
+	FerryData: FerryPassengerData?,
+	FerryState: string?,
+	AttackState: string?,
 }
 
 export type AgentState = {
@@ -29,6 +79,8 @@ export type AgentState = {
 	CommittedDirectionX: number,
 	CommittedDirectionZ: number,
 	CommitmentTimer: number,
+	LastObstacleUrgency: number,
+	BehaviorState: BehaviorState,
 }
 
 export type AgentGeometry = {
@@ -46,6 +98,18 @@ export type AgentData = {
 	State: AgentState,
 	Geometry: AgentGeometry,
 	RandomGenerator: Random,
+}
+
+export type BehaviorOutput = {
+	TargetX: number,
+	TargetZ: number,
+	ThrottleOverride: number?,
+	SteerOverride: number?,
+	ShouldStop: boolean?,
+	ObstacleAvoidanceMultiplier: number?,
+	WaypointBias: number?,
+	DockingTarget: BasePart?,
+	Priority: number?,
 }
 
 BoatAgentTypes.AGENT_TAG = "Agent"
@@ -74,7 +138,8 @@ BoatAgentTypes.NEAR_ZERO_THRESHOLD = 0.001
 BoatAgentTypes.VELOCITY_SMOOTHING_FACTOR = 0.3
 BoatAgentTypes.STEER_SMOOTHING_FACTOR = 0.12
 
-BoatAgentTypes.CRITICAL_OBSTACLE_THRESHOLD = 0.15
+BoatAgentTypes.CRITICAL_OBSTACLE_THRESHOLD = 0.12
+BoatAgentTypes.CRITICAL_OBSTACLE_OVERRIDE_THRESHOLD = 0.5
 BoatAgentTypes.OBSTACLE_STEER_URGENCY_MULTIPLIER = 4.0
 BoatAgentTypes.OBSTACLE_THROTTLE_REDUCTION = 0.5
 BoatAgentTypes.OBSTACLE_MIN_THROTTLE = 0.6
@@ -91,11 +156,13 @@ BoatAgentTypes.SEPARATION_STEER_URGENCY_MULTIPLIER = 0.5
 BoatAgentTypes.SEPARATION_THROTTLE_REDUCTION = 0.15
 BoatAgentTypes.SEPARATION_MIN_THROTTLE = 0.8
 
-BoatAgentTypes.SEPARATION_OBSTACLE_CONFLICT_THRESHOLD = -0.3
-BoatAgentTypes.SEPARATION_OBSTACLE_CONFLICT_REDUCTION = 0.3
+BoatAgentTypes.SEPARATION_OBSTACLE_CONFLICT_THRESHOLD = 0.2
+BoatAgentTypes.SEPARATION_OBSTACLE_CONFLICT_REDUCTION = 0.15
+BoatAgentTypes.SEPARATION_SAFETY_CHECK_DISTANCE_MULTIPLIER = 0.5
 
-BoatAgentTypes.DIRECTION_COMMITMENT_DURATION = 0.4
+BoatAgentTypes.DIRECTION_COMMITMENT_DURATION = 0.25
 BoatAgentTypes.DIRECTION_COMMITMENT_URGENCY_THRESHOLD = 0.3
+BoatAgentTypes.URGENCY_SPIKE_THRESHOLD = 0.15
 
 BoatAgentTypes.NORMAL_OBSTACLE_BOOST_MULTIPLIER = 4.0
 BoatAgentTypes.NORMAL_OBSTACLE_URGENCY_THRESHOLD = 0.1
@@ -107,6 +174,7 @@ BoatAgentTypes.WHISKER_CLOSE_HIT_DISTANCE = 15
 BoatAgentTypes.WHISKER_CLOSE_HIT_BOOST = 0.5
 BoatAgentTypes.WHISKER_CENTER_IMPORTANCE = 0.8
 BoatAgentTypes.WHISKER_FORWARD_BIAS_EXPONENT = 1.5
+BoatAgentTypes.WHISKER_FORWARD_BIAS_BLOCKED_PENALTY = 1.5
 BoatAgentTypes.WHISKER_SCORE_FORWARD_WEIGHT = 0.7
 BoatAgentTypes.WHISKER_SCORE_BASE_WEIGHT = 0.3
 

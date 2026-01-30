@@ -18,6 +18,7 @@ local WHISKER_CLOSE_HIT_DISTANCE = BoatAgentTypes.WHISKER_CLOSE_HIT_DISTANCE
 local WHISKER_CLOSE_HIT_BOOST = BoatAgentTypes.WHISKER_CLOSE_HIT_BOOST
 local WHISKER_CENTER_IMPORTANCE = BoatAgentTypes.WHISKER_CENTER_IMPORTANCE
 local WHISKER_FORWARD_BIAS_EXPONENT = BoatAgentTypes.WHISKER_FORWARD_BIAS_EXPONENT
+local WHISKER_FORWARD_BIAS_BLOCKED_PENALTY = BoatAgentTypes.WHISKER_FORWARD_BIAS_BLOCKED_PENALTY
 local WHISKER_SCORE_FORWARD_WEIGHT = BoatAgentTypes.WHISKER_SCORE_FORWARD_WEIGHT
 local WHISKER_SCORE_BASE_WEIGHT = BoatAgentTypes.WHISKER_SCORE_BASE_WEIGHT
 
@@ -27,6 +28,7 @@ local BLOCKED_BLEND_ALPHA_OFFSET = BoatAgentTypes.BLOCKED_BLEND_ALPHA_OFFSET
 local BLOCKED_BLEND_ALPHA_MULTIPLIER = BoatAgentTypes.BLOCKED_BLEND_ALPHA_MULTIPLIER
 
 local CAN_SEE_DISTANCE_TOLERANCE = BoatAgentTypes.CAN_SEE_DISTANCE_TOLERANCE
+local SEPARATION_SAFETY_CHECK_DISTANCE_MULTIPLIER = BoatAgentTypes.SEPARATION_SAFETY_CHECK_DISTANCE_MULTIPLIER
 
 local ObstacleRaycastParams = RaycastParams.new()
 ObstacleRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -73,6 +75,21 @@ local function CastObstacleRay(Origin: Vector3, Direction: Vector3, Distance: nu
 	return false, Distance, nil
 end
 
+function BoatAgentObstacle.IsSeparationDirectionSafe(Agent: BoatAgentTypes.AgentData, SeparationDirection: Vector3): boolean
+	local Position = Agent.PrimaryPart.Position
+	local RayOrigin = Vector3.new(Position.X, Position.Y + Agent.Geometry.RaycastHeight, Position.Z)
+	local CheckDistance = Agent.Geometry.RaycastDistance * SEPARATION_SAFETY_CHECK_DISTANCE_MULTIPLIER
+
+	local DidHit, HitDistance = CastObstacleRay(RayOrigin, SeparationDirection, CheckDistance)
+
+	if DidHit then
+		local SafetyMargin = Agent.Geometry.BoundingRadius * 2
+		return HitDistance > SafetyMargin
+	end
+
+	return true
+end
+
 function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentData): (Vector3, number)
 	local CurrentTime = os.clock()
 	if CurrentTime - Agent.State.LastTerrainCheckTime < TERRAIN_CHECK_INTERVAL then
@@ -94,6 +111,9 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 	local MaxBlockedScore = 0
 	local RepulsionX = 0
 	local RepulsionZ = 0
+
+	local CenterWhiskerIndex = math.ceil(WHISKER_COUNT / 2)
+	local CenterBlockedScore = 0
 
 	for WhiskerIndex = 0, WHISKER_COUNT - 1 do
 		local AngleFraction = (WhiskerIndex / (WHISKER_COUNT - 1)) - 0.5
@@ -137,6 +157,10 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 
 			RepulsionX = RepulsionX - WhiskerDirection.X * BlockedScore
 			RepulsionZ = RepulsionZ - WhiskerDirection.Z * BlockedScore
+
+			if WhiskerIndex + 1 == CenterWhiskerIndex then
+				CenterBlockedScore = BlockedScore
+			end
 		end
 
 		ClearScoreByIndex[WhiskerIndex + 1] = ClearScore
@@ -146,6 +170,8 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 		end
 	end
 
+	local AdjustedForwardBiasExponent = WHISKER_FORWARD_BIAS_EXPONENT + CenterBlockedScore * WHISKER_FORWARD_BIAS_BLOCKED_PENALTY
+
 	local BestDirection = Forward
 	local BestScore = 0
 
@@ -154,7 +180,7 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 		local AngleFraction = (WhiskerIndex / (WHISKER_COUNT - 1)) - 0.5
 
 		local ClearScore = ClearScoreByIndex[Index]
-		local ForwardBias = (1 - math.abs(AngleFraction)) ^ WHISKER_FORWARD_BIAS_EXPONENT
+		local ForwardBias = (1 - math.abs(AngleFraction)) ^ AdjustedForwardBiasExponent
 		local WeightedScore = ClearScore * (WHISKER_SCORE_BASE_WEIGHT + WHISKER_SCORE_FORWARD_WEIGHT * ForwardBias)
 
 		if WeightedScore > BestScore then
