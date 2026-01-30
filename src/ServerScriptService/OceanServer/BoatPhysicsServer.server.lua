@@ -18,7 +18,7 @@ local DEFAULT_MAX_REVERSE_SPEED = 15
 local DEFAULT_ACCELERATION = 15
 local DEFAULT_DECELERATION = 5
 local DEFAULT_MAX_TURN_RATE = 15
-local DEFAULT_TURN_ACCELERATION = 180
+local DEFAULT_TURN_ACCELERATION = 90
 local DEFAULT_TURN_DECELERATION = 120
 local DEFAULT_HEIGHT_OFFSET = 0
 
@@ -335,6 +335,8 @@ local function HoldBoatAtCurrentHeight(Data: BoatData): ()
 	Data.BodyPosition.Position = CurrentPosition
 end
 
+-- Replace the UpdateBoatMovement function in BoatPhysicsServer.server.lua with this:
+
 local function UpdateBoatMovement(Data: BoatData, DeltaTime: number): ()
 	local Inputs = GetControlInputs(Data)
 	local Throttle = Inputs.Throttle
@@ -342,12 +344,7 @@ local function UpdateBoatMovement(Data: BoatData, DeltaTime: number): ()
 
 	local Settings = Data.Settings
 
-	local TargetTurnSpeed = 0
-	if Steer == 1 then
-		TargetTurnSpeed = -Settings.MaxTurnRate
-	elseif Steer == -1 then
-		TargetTurnSpeed = Settings.MaxTurnRate
-	end
+	local TargetTurnSpeed = -Steer * Settings.MaxTurnRate
 
 	if Steer ~= 0 then
 		Data.CurrentTurnSpeed = MoveTowards(
@@ -366,10 +363,10 @@ local function UpdateBoatMovement(Data: BoatData, DeltaTime: number): ()
 	Data.BodyAngularVelocity.AngularVelocity = Vector3.new(0, Data.CurrentTurnSpeed, 0)
 
 	local TargetSpeed = 0
-	if Throttle == 1 then
-		TargetSpeed = Settings.MaxForwardSpeed
-	elseif Throttle == -1 then
-		TargetSpeed = -Settings.MaxReverseSpeed
+	if Throttle > 0 then
+		TargetSpeed = Throttle * Settings.MaxForwardSpeed
+	elseif Throttle < 0 then
+		TargetSpeed = Throttle * Settings.MaxReverseSpeed
 	end
 
 	if Throttle ~= 0 then

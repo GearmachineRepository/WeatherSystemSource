@@ -8,6 +8,17 @@ local BoatAgentDebug = require(script.Parent:WaitForChild("BoatAgentDebug"))
 local BoatAgentFlocking = {}
 
 local DEBUG_ENABLED = BoatAgentTypes.DEBUG_ENABLED
+local NEAR_ZERO_THRESHOLD = BoatAgentTypes.NEAR_ZERO_THRESHOLD
+
+local FLOCKING_DETECTION_RANGE_MULTIPLIER = BoatAgentTypes.FLOCKING_DETECTION_RANGE_MULTIPLIER
+local FLOCKING_MAX_FUTURE_TIME = BoatAgentTypes.FLOCKING_MAX_FUTURE_TIME
+local FLOCKING_MIN_THREAT_DISTANCE = BoatAgentTypes.FLOCKING_MIN_THREAT_DISTANCE
+local FLOCKING_CLOSE_THREAT_MULTIPLIER = BoatAgentTypes.FLOCKING_CLOSE_THREAT_MULTIPLIER
+local FLOCKING_IN_FRONT_MULTIPLIER = BoatAgentTypes.FLOCKING_IN_FRONT_MULTIPLIER
+local FLOCKING_CONVERGING_MULTIPLIER = BoatAgentTypes.FLOCKING_CONVERGING_MULTIPLIER
+
+local FLOCKING_HEAD_ON_MULTIPLIER = BoatAgentTypes.FLOCKING_HEAD_ON_MULTIPLIER
+local FLOCKING_HEAD_ON_DOT_THRESHOLD = BoatAgentTypes.FLOCKING_HEAD_ON_DOT_THRESHOLD
 
 function BoatAgentFlocking.ComputeSeparationVector(Agent: BoatAgentTypes.AgentData, ActiveAgents: {[Model]: BoatAgentTypes.AgentData}): Vector3
 	local BoatPosition = Agent.PrimaryPart.Position
@@ -34,7 +45,7 @@ function BoatAgentFlocking.ComputeSeparationVector(Agent: BoatAgentTypes.AgentDa
 		local DistanceSquared = DeltaX * DeltaX + DeltaZ * DeltaZ
 		local CurrentDistance = math.sqrt(DistanceSquared)
 
-		if CurrentDistance < 0.001 then
+		if CurrentDistance < NEAR_ZERO_THRESHOLD then
 			SeparationX = SeparationX + Agent.RandomGenerator:NextNumber(-1, 1)
 			SeparationZ = SeparationZ + Agent.RandomGenerator:NextNumber(-1, 1)
 			continue
@@ -42,19 +53,17 @@ function BoatAgentFlocking.ComputeSeparationVector(Agent: BoatAgentTypes.AgentDa
 
 		local CombinedRadius = Agent.Geometry.BoundingRadius + OtherAgent.Geometry.BoundingRadius
 		local MinDistance = math.max(Agent.Config.MinSeparationDistance, CombinedRadius * 2)
-		local DetectionRange = MinDistance * 3
+		local DetectionRange = MinDistance * FLOCKING_DETECTION_RANGE_MULTIPLIER
 
 		if CurrentDistance > DetectionRange then
 			continue
 		end
 
-		local RayOrigin = Vector3.new(BoatX, BoatPosition.Y + 3, BoatZ)
-		local RayTarget = Vector3.new(OtherX, OtherPosition.Y + 3, OtherZ)
-		if not BoatAgentObstacle.CanSeeOtherBoat(RayOrigin, RayTarget) then
+		if not BoatAgentObstacle.CanSeeOtherBoat(Agent, OtherAgent) then
 			continue
 		end
 
-		local FutureTime = math.min(Agent.Config.LookaheadTime, 3.0)
+		local FutureTime = math.min(Agent.Config.LookaheadTime, FLOCKING_MAX_FUTURE_TIME)
 		local FutureAgentX = BoatX + VelocityX * FutureTime
 		local FutureAgentZ = BoatZ + VelocityZ * FutureTime
 		local FutureOtherX = OtherX + OtherAgent.State.EstimatedVelocityX * FutureTime
@@ -74,18 +83,30 @@ function BoatAgentFlocking.ComputeSeparationVector(Agent: BoatAgentTypes.AgentDa
 
 		local Strength: number
 		if ThreatDistance < MinDistance then
-			Strength = (MinDistance / math.max(ThreatDistance, 1)) * 3
+			Strength = (MinDistance / math.max(ThreatDistance, FLOCKING_MIN_THREAT_DISTANCE)) * FLOCKING_CLOSE_THREAT_MULTIPLIER
 		else
 			local NormalizedDistance = (ThreatDistance - MinDistance) / (DetectionRange - MinDistance)
 			Strength = (1 - NormalizedDistance) * (1 - NormalizedDistance)
 		end
 
 		if InFront then
-			Strength = Strength * 1.5
+			Strength = Strength * FLOCKING_IN_FRONT_MULTIPLIER
 		end
 
 		if FutureDistance < CurrentDistance then
-			Strength = Strength * 1.5
+			Strength = Strength * FLOCKING_CONVERGING_MULTIPLIER
+		end
+
+		local OtherVelocityX = OtherAgent.State.EstimatedVelocityX
+		local OtherVelocityZ = OtherAgent.State.EstimatedVelocityZ
+		local OtherSpeed = OtherAgent.State.EstimatedSpeed
+		if OtherSpeed > 1 then
+			local OtherDirX = OtherVelocityX / OtherSpeed
+			local OtherDirZ = OtherVelocityZ / OtherSpeed
+			local HeadingTowardUs = OtherDirX * -DirectionX + OtherDirZ * -DirectionZ
+			if HeadingTowardUs > FLOCKING_HEAD_ON_DOT_THRESHOLD and InFront then
+				Strength = Strength * FLOCKING_HEAD_ON_MULTIPLIER
+			end
 		end
 
 		SeparationX = SeparationX + DirectionX * Strength

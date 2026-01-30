@@ -11,25 +11,32 @@ local WHISKER_SPREAD_ANGLE = BoatAgentTypes.WHISKER_SPREAD_ANGLE
 local TERRAIN_CHECK_INTERVAL = BoatAgentTypes.TERRAIN_CHECK_INTERVAL
 local DEBUG_ENABLED = BoatAgentTypes.DEBUG_ENABLED
 
+local NEAR_ZERO_THRESHOLD = BoatAgentTypes.NEAR_ZERO_THRESHOLD
+local WHISKER_SPEED_DISTANCE_MULTIPLIER = BoatAgentTypes.WHISKER_SPEED_DISTANCE_MULTIPLIER
+local WHISKER_CENTER_WEIGHT_REDUCTION = BoatAgentTypes.WHISKER_CENTER_WEIGHT_REDUCTION
+local WHISKER_CLOSE_HIT_DISTANCE = BoatAgentTypes.WHISKER_CLOSE_HIT_DISTANCE
+local WHISKER_CLOSE_HIT_BOOST = BoatAgentTypes.WHISKER_CLOSE_HIT_BOOST
+local WHISKER_CENTER_IMPORTANCE = BoatAgentTypes.WHISKER_CENTER_IMPORTANCE
+local WHISKER_FORWARD_BIAS_EXPONENT = BoatAgentTypes.WHISKER_FORWARD_BIAS_EXPONENT
+local WHISKER_SCORE_FORWARD_WEIGHT = BoatAgentTypes.WHISKER_SCORE_FORWARD_WEIGHT
+local WHISKER_SCORE_BASE_WEIGHT = BoatAgentTypes.WHISKER_SCORE_BASE_WEIGHT
+
+local BLOCKED_SCORE_MIN_THRESHOLD = BoatAgentTypes.BLOCKED_SCORE_MIN_THRESHOLD
+local BLOCKED_SCORE_HIGH_THRESHOLD = BoatAgentTypes.BLOCKED_SCORE_HIGH_THRESHOLD
+local BLOCKED_BLEND_ALPHA_OFFSET = BoatAgentTypes.BLOCKED_BLEND_ALPHA_OFFSET
+local BLOCKED_BLEND_ALPHA_MULTIPLIER = BoatAgentTypes.BLOCKED_BLEND_ALPHA_MULTIPLIER
+
+local CAN_SEE_DISTANCE_TOLERANCE = BoatAgentTypes.CAN_SEE_DISTANCE_TOLERANCE
+
 local ObstacleRaycastParams = RaycastParams.new()
 ObstacleRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 ObstacleRaycastParams.FilterDescendantsInstances = {}
 ObstacleRaycastParams.IgnoreWater = true
 
-function BoatAgentObstacle.UpdateRaycastFilter(ActiveAgents: {[Model]: any})
+local BaseFilterInstances: {Instance} = {}
+
+function BoatAgentObstacle.UpdateRaycastFilter(_ActiveAgents: {[Model]: any})
 	local FilterInstances: {Instance} = {}
-
-	local CollectionService = game:GetService("CollectionService")
-
-	for BoatModel, _ in pairs(ActiveAgents) do
-		table.insert(FilterInstances, BoatModel)
-	end
-
-	for _, TaggedBoat in CollectionService:GetTagged(BoatAgentTypes.BOAT_TAG) do
-		if not ActiveAgents[TaggedBoat :: Model] then
-			table.insert(FilterInstances, TaggedBoat)
-		end
-	end
 
 	local OceanFolder = workspace:FindFirstChild("Ocean")
 	if OceanFolder then
@@ -41,6 +48,12 @@ function BoatAgentObstacle.UpdateRaycastFilter(ActiveAgents: {[Model]: any})
 		table.insert(FilterInstances, WaterFolder)
 	end
 
+	BaseFilterInstances = FilterInstances
+end
+
+local function SetFilterForAgent(Agent: BoatAgentTypes.AgentData)
+	local FilterInstances = table.clone(BaseFilterInstances)
+	table.insert(FilterInstances, Agent.BoatModel)
 	ObstacleRaycastParams.FilterDescendantsInstances = FilterInstances
 end
 
@@ -67,11 +80,12 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 	end
 	Agent.State.LastTerrainCheckTime = CurrentTime
 
+	SetFilterForAgent(Agent)
+
 	local Position = Agent.PrimaryPart.Position
 	local Forward = BoatAgentUtils.GetHorizontalLookVector(Agent.PrimaryPart)
-	local _RightVector = BoatAgentUtils.GetHorizontalRightVector(Agent.PrimaryPart)
 
-	local BaseDistance = Agent.Geometry.RaycastDistance + Agent.State.EstimatedSpeed * 1.5
+	local BaseDistance = Agent.Geometry.RaycastDistance + Agent.State.EstimatedSpeed * WHISKER_SPEED_DISTANCE_MULTIPLIER
 	local RayOrigin = Vector3.new(Position.X, Position.Y + Agent.Geometry.RaycastHeight, Position.Z)
 
 	local ClearScoreByIndex: {number} = table.create(WHISKER_COUNT, 1)
@@ -92,7 +106,7 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 		local WhiskerDirZ = Forward.Z * WhiskerCos + Forward.X * WhiskerSin
 		local WhiskerDirection = Vector3.new(WhiskerDirX, 0, WhiskerDirZ).Unit
 
-		local CenterWeight = 1 - math.abs(AngleFraction) * 0.4
+		local CenterWeight = 1 - math.abs(AngleFraction) * WHISKER_CENTER_WEIGHT_REDUCTION
 		local WhiskerDistance = BaseDistance * CenterWeight
 
 		DirectionByIndex[WhiskerIndex + 1] = WhiskerDirection
@@ -103,17 +117,17 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 		local BlockedScore = 0
 
 		if DidHit then
-			local NormalizedHit = math.clamp(HitDistance / math.max(WhiskerDistance, 0.001), 0, 1)
+			local NormalizedHit = math.clamp(HitDistance / math.max(WhiskerDistance, NEAR_ZERO_THRESHOLD), 0, 1)
 			ClearScore = NormalizedHit
 			BlockedScore = 1 - NormalizedHit
 
-			if HitDistance < 15 then
-				local CloseBoost = (1 - HitDistance / 15) * 0.5
+			if HitDistance < WHISKER_CLOSE_HIT_DISTANCE then
+				local CloseBoost = (1 - HitDistance / WHISKER_CLOSE_HIT_DISTANCE) * WHISKER_CLOSE_HIT_BOOST
 				BlockedScore = math.clamp(BlockedScore + CloseBoost, 0, 1)
 				ClearScore = 1 - BlockedScore
 			end
 
-			local CenterImportance = 1 + (1 - math.abs(AngleFraction) * 2) * 0.8
+			local CenterImportance = 1 + (1 - math.abs(AngleFraction) * 2) * WHISKER_CENTER_IMPORTANCE
 			BlockedScore = math.clamp(BlockedScore * CenterImportance, 0, 1)
 			ClearScore = 1 - BlockedScore
 
@@ -140,8 +154,8 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 		local AngleFraction = (WhiskerIndex / (WHISKER_COUNT - 1)) - 0.5
 
 		local ClearScore = ClearScoreByIndex[Index]
-		local ForwardBias = (1 - math.abs(AngleFraction)) ^ 1.5
-		local WeightedScore = ClearScore * (0.3 + 0.7 * ForwardBias)
+		local ForwardBias = (1 - math.abs(AngleFraction)) ^ WHISKER_FORWARD_BIAS_EXPONENT
+		local WeightedScore = ClearScore * (WHISKER_SCORE_BASE_WEIGHT + WHISKER_SCORE_FORWARD_WEIGHT * ForwardBias)
 
 		if WeightedScore > BestScore then
 			BestScore = WeightedScore
@@ -151,20 +165,20 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 
 	local ResultVector: Vector3
 
-	if MaxBlockedScore < 0.05 then
+	if MaxBlockedScore < BLOCKED_SCORE_MIN_THRESHOLD then
 		ResultVector = Vector3.zero
-	elseif MaxBlockedScore > 0.7 then
+	elseif MaxBlockedScore > BLOCKED_SCORE_HIGH_THRESHOLD then
 		local RepulsionMagnitude = math.sqrt(RepulsionX * RepulsionX + RepulsionZ * RepulsionZ)
-		if RepulsionMagnitude > 0.001 then
+		if RepulsionMagnitude > NEAR_ZERO_THRESHOLD then
 			local RepulsionNormX = RepulsionX / RepulsionMagnitude
 			local RepulsionNormZ = RepulsionZ / RepulsionMagnitude
 
-			local BlendAlpha = math.clamp((MaxBlockedScore - 0.5) * 2, 0, 1)
+			local BlendAlpha = math.clamp((MaxBlockedScore - BLOCKED_BLEND_ALPHA_OFFSET) * BLOCKED_BLEND_ALPHA_MULTIPLIER, 0, 1)
 			local BlendedX = BestDirection.X * (1 - BlendAlpha) + RepulsionNormX * BlendAlpha
 			local BlendedZ = BestDirection.Z * (1 - BlendAlpha) + RepulsionNormZ * BlendAlpha
 
 			local BlendedMagnitude = math.sqrt(BlendedX * BlendedX + BlendedZ * BlendedZ)
-			if BlendedMagnitude > 0.001 then
+			if BlendedMagnitude > NEAR_ZERO_THRESHOLD then
 				ResultVector = Vector3.new(BlendedX / BlendedMagnitude, 0, BlendedZ / BlendedMagnitude)
 			else
 				ResultVector = BestDirection
@@ -186,17 +200,33 @@ function BoatAgentObstacle.ComputeAvoidanceVector(Agent: BoatAgentTypes.AgentDat
 	return ResultVector, MaxBlockedScore
 end
 
-function BoatAgentObstacle.CanSeeOtherBoat(FromPosition: Vector3, ToPosition: Vector3): boolean
+local FLOCKING_RAY_HEIGHT_OFFSET = BoatAgentTypes.FLOCKING_RAY_HEIGHT_OFFSET
+
+function BoatAgentObstacle.CanSeeOtherBoat(Agent: BoatAgentTypes.AgentData, OtherAgent: BoatAgentTypes.AgentData): boolean
+	local AgentPos = Agent.PrimaryPart.Position
+	local OtherPos = OtherAgent.PrimaryPart.Position
+	local FromPosition = Vector3.new(AgentPos.X, AgentPos.Y + FLOCKING_RAY_HEIGHT_OFFSET, AgentPos.Z)
+	local ToPosition = Vector3.new(OtherPos.X, OtherPos.Y + FLOCKING_RAY_HEIGHT_OFFSET, OtherPos.Z)
+
 	local Direction = ToPosition - FromPosition
 	local Distance = Direction.Magnitude
-	if Distance < 0.001 then
+	if Distance < NEAR_ZERO_THRESHOLD then
 		return true
 	end
 
-	local RayResult = workspace:Raycast(FromPosition, Direction, ObstacleRaycastParams)
+	local FilterInstances = table.clone(BaseFilterInstances)
+	table.insert(FilterInstances, Agent.BoatModel)
+	table.insert(FilterInstances, OtherAgent.BoatModel)
+
+	local VisibilityParams = RaycastParams.new()
+	VisibilityParams.FilterType = Enum.RaycastFilterType.Exclude
+	VisibilityParams.FilterDescendantsInstances = FilterInstances
+	VisibilityParams.IgnoreWater = true
+
+	local RayResult = workspace:Raycast(FromPosition, Direction, VisibilityParams)
 	if RayResult then
 		local HitDistance = (RayResult.Position - FromPosition).Magnitude
-		if HitDistance < Distance - 5 then
+		if HitDistance < Distance - CAN_SEE_DISTANCE_TOLERANCE then
 			return false
 		end
 	end
