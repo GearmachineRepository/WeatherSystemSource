@@ -13,11 +13,11 @@ local BuoyUtils = require(OceanSystem.Shared.BuoyUtils)
 
 local BOAT_TAG = "Boat"
 
-local DEFAULT_MAX_FORWARD_SPEED = 50 --30
+local DEFAULT_MAX_FORWARD_SPEED = 30 --30
 local DEFAULT_MAX_REVERSE_SPEED = 15
 local DEFAULT_ACCELERATION = 15
 local DEFAULT_DECELERATION = 5
-local DEFAULT_MAX_TURN_RATE = 50 --15
+local DEFAULT_MAX_TURN_RATE = 20 --15
 local DEFAULT_TURN_ACCELERATION = 90
 local DEFAULT_TURN_DECELERATION = 120
 local DEFAULT_HEIGHT_OFFSET = 0
@@ -483,16 +483,13 @@ local function InitializeBoat(Model: Model): ()
 end
 
 local function InitializeOceanSettings(): ()
-	local Ocean = workspace:FindFirstChild("Ocean")
-	if not Ocean then
-		warn("[BoatPhysicsServer] Ocean folder not found")
+	local Configuration = ReplicatedStorage:WaitForChild("OceanConfiguration", 10) :: Configuration?
+	if not Configuration then
+		warn("[BoatPhysicsServer] OceanConfiguration not found in ReplicatedStorage")
 		return
 	end
 
-	local OceanMesh = Ocean:FindFirstChild("Plane") :: MeshPart?
-	if OceanMesh then
-		OceanSettings.Initialize(OceanMesh)
-	end
+	OceanSettings.Initialize(Configuration)
 end
 
 local function SetupExistingBoats(): ()

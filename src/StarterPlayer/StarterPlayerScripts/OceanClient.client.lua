@@ -3,31 +3,38 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local OceanSystem = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("OceanSystem")
-local OceanController = require(OceanSystem.Client.OceanController)
-local OceanTexture = require(OceanSystem.Client.OceanTexture)
+local OceanTileManager = require(OceanSystem.Client.OceanTileManager)
 local OceanSettings = require(OceanSystem.Shared.OceanSettings)
+local OceanConfig = require(OceanSystem.Shared.OceanConfig)
 
-local Ocean = workspace:WaitForChild("Ocean", 30)
-if not Ocean then
-	warn("[OceanClient] Ocean folder not found in workspace")
+local TILE_SIZE = 1024
+local MAX_UPDATE_DISTANCE = OceanConfig.MAX_UPDATE_DISTANCE
+
+local TileTemplate = ReplicatedStorage:WaitForChild("OceanTile", 10) :: Model
+if not TileTemplate then
+	warn("[OceanClient] OceanTile template not found in ReplicatedStorage")
 	return
 end
 
-local OceanMesh = Ocean:WaitForChild("Plane", 10) :: MeshPart
-if not OceanMesh then
-	warn("[OceanClient] Plane not found in workspace/Ocean")
+if not TileTemplate.PrimaryPart then
+	warn("[OceanClient] OceanTile has no PrimaryPart set")
 	return
 end
 
-OceanSettings.Initialize(OceanMesh)
+local Configuration = ReplicatedStorage:WaitForChild("OceanConfiguration", 10) :: Configuration
+if not Configuration then
+	warn("[OceanClient] OceanConfiguration not found in ReplicatedStorage")
+	return
+end
 
-local Controller = OceanController.new(OceanMesh)
-Controller:Start()
+OceanSettings.Initialize(Configuration)
 
-local TextureController = OceanTexture.new(OceanMesh, {
-	FrameRate = 24,
+local Manager = OceanTileManager.new(TileTemplate, TILE_SIZE, MAX_UPDATE_DISTANCE)
+Manager:Start()
+Manager:SetWaveUpdateRate(60)
+
+Manager:EnableTextures({
+	FrameRate = 20,
 	FolderName = "OceanMaterialVariants",
 	DecalFolder = "WaterNormalMaps",
 })
-TextureController:Preload()
-TextureController:Start()

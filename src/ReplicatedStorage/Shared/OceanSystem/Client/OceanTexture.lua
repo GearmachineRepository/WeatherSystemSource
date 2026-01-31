@@ -105,7 +105,7 @@ function OceanTexture._Update(self: OceanTexture): ()
 		return
 	end
 
-	local Elapsed = os.clock() - self.StartTime
+	local Elapsed = workspace:GetServerTimeNow()
 	local FrameIndex = math.floor(Elapsed * self.FrameRate) % #self.Variants + 1
 
 	if FrameIndex ~= self.CurrentFrameIndex then

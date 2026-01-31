@@ -29,32 +29,34 @@ export type RuntimeSettings = {
 
 local OceanSettings = {}
 
+local TILE_SIZE = 1024
+
 local BASE_WAVES: {WaveDefinition} = {
 	{
-		Wavelength = 200,
+		Wavelength = 500,
 		Direction = Vector2.new(1, 0),
-		Steepness = 0.20,
+		Steepness = 0.15,
 		Gravity = 9.8,
 		Layer = "Primary",
 	},
 	{
-		Wavelength = 120,
+		Wavelength = 250,
 		Direction = Vector2.new(0.7, 0.7),
-		Steepness = 0.14,
+		Steepness = 0.12,
 		Gravity = 9.8,
 		Layer = "Secondary",
 	},
 	{
-		Wavelength = 40,
-		Direction = Vector2.new(-0.3, 1),
+		Wavelength = 100,
+		Direction = Vector2.new(-0.5, 0.85),
 		Steepness = 0.08,
 		Gravity = 9.8,
-		Layer = "Chop",
+		Layer = "Detail",
 	},
 	{
-		Wavelength = 15,
-		Direction = Vector2.new(0.5, -0.8),
-		Steepness = 0.04,
+		Wavelength = 50,
+		Direction = Vector2.new(0.6, -0.8),
+		Steepness = 0.05,
 		Gravity = 9.8,
 		Layer = "Chop",
 	},
@@ -91,7 +93,7 @@ local DEFAULT_SETTINGS: RuntimeSettings = {
 }
 
 local SettingsTrove: typeof(Trove.new())? = nil
-local OceanMesh: MeshPart? = nil
+local ConfigurationInstance: Configuration? = nil
 local CurrentSettings: RuntimeSettings = table.clone(DEFAULT_SETTINGS)
 local ComputedWaves: {WaveDefinition} = {}
 local ComputedTimeModifier: number = 5
@@ -109,7 +111,7 @@ local function ComputeWaves(): ()
 
 	for _, BaseWave in BASE_WAVES do
 		local SteepnessMultiplier = Intensity
-		if BaseWave.Layer == "Chop" then
+		if BaseWave.Layer == "Chop" or BaseWave.Layer == "Detail" then
 			SteepnessMultiplier = Intensity * Choppiness
 		end
 
@@ -135,14 +137,14 @@ local function ComputeWaves(): ()
 end
 
 local function ReadAttributes(): ()
-	if not OceanMesh then
+	if not ConfigurationInstance then
 		return
 	end
 
-	local Intensity = OceanMesh:GetAttribute("Intensity") :: number?
-	local Speed = OceanMesh:GetAttribute("Speed") :: number?
-	local WindDirection = OceanMesh:GetAttribute("WindDirection") :: number?
-	local Choppiness = OceanMesh:GetAttribute("Choppiness") :: number?
+	local Intensity = ConfigurationInstance:GetAttribute("Intensity") :: number?
+	local Speed = ConfigurationInstance:GetAttribute("Speed") :: number?
+	local WindDirection = ConfigurationInstance:GetAttribute("WindDirection") :: number?
+	local Choppiness = ConfigurationInstance:GetAttribute("Choppiness") :: number?
 
 	CurrentSettings.Intensity = math.clamp(Intensity or 0.5, 0, 1)
 	CurrentSettings.Speed = math.clamp(Speed or 1.0, 0.1, 3)
@@ -150,34 +152,34 @@ local function ReadAttributes(): ()
 	CurrentSettings.Choppiness = math.clamp(Choppiness or 0.5, 0, 1)
 end
 
-local function SetupDefaultAttributes(Mesh: MeshPart): ()
-	if not Mesh:GetAttribute("Intensity") then
-		Mesh:SetAttribute("Intensity", DEFAULT_SETTINGS.Intensity)
+local function SetupDefaultAttributes(Config: Configuration): ()
+	if not Config:GetAttribute("Intensity") then
+		Config:SetAttribute("Intensity", DEFAULT_SETTINGS.Intensity)
 	end
-	if not Mesh:GetAttribute("Speed") then
-		Mesh:SetAttribute("Speed", DEFAULT_SETTINGS.Speed)
+	if not Config:GetAttribute("Speed") then
+		Config:SetAttribute("Speed", DEFAULT_SETTINGS.Speed)
 	end
-	if not Mesh:GetAttribute("WindDirection") then
-		Mesh:SetAttribute("WindDirection", 45)
+	if not Config:GetAttribute("WindDirection") then
+		Config:SetAttribute("WindDirection", 45)
 	end
-	if not Mesh:GetAttribute("Choppiness") then
-		Mesh:SetAttribute("Choppiness", DEFAULT_SETTINGS.Choppiness)
+	if not Config:GetAttribute("Choppiness") then
+		Config:SetAttribute("Choppiness", DEFAULT_SETTINGS.Choppiness)
 	end
 end
 
-function OceanSettings.Initialize(Mesh: MeshPart): ()
+function OceanSettings.Initialize(Config: Configuration): ()
 	if SettingsTrove then
 		SettingsTrove:Destroy()
 	end
 
 	local NewTrove = Trove.new()
-	OceanMesh = Mesh
+	ConfigurationInstance = Config
 
-	SetupDefaultAttributes(Mesh)
+	SetupDefaultAttributes(Config)
 	ReadAttributes()
 	ComputeWaves()
 
-	NewTrove:Connect(Mesh.AttributeChanged, function(AttributeName: string)
+	NewTrove:Connect(Config.AttributeChanged, function(AttributeName: string)
 		if AttributeName == "Intensity"
 			or AttributeName == "Speed"
 			or AttributeName == "WindDirection"
@@ -203,6 +205,10 @@ function OceanSettings.GetBaseWaterHeight(): number
 	return OceanConfig.BASE_WATER_HEIGHT
 end
 
+function OceanSettings.GetTileSize(): number
+	return TILE_SIZE
+end
+
 function OceanSettings.Get(): RuntimeSettings
 	return {
 		Intensity = CurrentSettings.Intensity,
@@ -218,21 +224,21 @@ function OceanSettings.Set(Settings: {
 	WindDirection: number?,
 	Choppiness: number?,
 }): ()
-	if not OceanMesh then
+	if not ConfigurationInstance then
 		return
 	end
 
 	if Settings.Intensity then
-		OceanMesh:SetAttribute("Intensity", Settings.Intensity)
+		ConfigurationInstance:SetAttribute("Intensity", Settings.Intensity)
 	end
 	if Settings.Speed then
-		OceanMesh:SetAttribute("Speed", Settings.Speed)
+		ConfigurationInstance:SetAttribute("Speed", Settings.Speed)
 	end
 	if Settings.WindDirection then
-		OceanMesh:SetAttribute("WindDirection", Settings.WindDirection)
+		ConfigurationInstance:SetAttribute("WindDirection", Settings.WindDirection)
 	end
 	if Settings.Choppiness then
-		OceanMesh:SetAttribute("Choppiness", Settings.Choppiness)
+		ConfigurationInstance:SetAttribute("Choppiness", Settings.Choppiness)
 	end
 end
 
@@ -243,10 +249,10 @@ function OceanSettings.SetPreset(PresetName: string): ()
 		return
 	end
 
-	if OceanMesh then
-		OceanMesh:SetAttribute("Intensity", Preset.Intensity)
-		OceanMesh:SetAttribute("Speed", Preset.Speed)
-		OceanMesh:SetAttribute("Choppiness", Preset.Choppiness)
+	if ConfigurationInstance then
+		ConfigurationInstance:SetAttribute("Intensity", Preset.Intensity)
+		ConfigurationInstance:SetAttribute("Speed", Preset.Speed)
+		ConfigurationInstance:SetAttribute("Choppiness", Preset.Choppiness)
 	end
 end
 
@@ -259,9 +265,9 @@ function OceanSettings.TweenTo(
 	},
 	Duration: number
 ): RBXScriptConnection?
-	local ActiveMesh = OceanMesh
+	local ActiveConfig = ConfigurationInstance
 	local ActiveTrove = SettingsTrove
-	if not ActiveMesh or not ActiveTrove then
+	if not ActiveConfig or not ActiveTrove then
 		return nil
 	end
 
@@ -283,17 +289,17 @@ function OceanSettings.TweenTo(
 
 		if TargetSettings.Intensity then
 			local Value = StartSettings.Intensity + (TargetSettings.Intensity - StartSettings.Intensity) * Alpha
-			ActiveMesh:SetAttribute("Intensity", Value)
+			ActiveConfig:SetAttribute("Intensity", Value)
 		end
 
 		if TargetSettings.Speed then
 			local Value = StartSettings.Speed + (TargetSettings.Speed - StartSettings.Speed) * Alpha
-			ActiveMesh:SetAttribute("Speed", Value)
+			ActiveConfig:SetAttribute("Speed", Value)
 		end
 
 		if TargetSettings.Choppiness then
 			local Value = StartSettings.Choppiness + (TargetSettings.Choppiness - StartSettings.Choppiness) * Alpha
-			ActiveMesh:SetAttribute("Choppiness", Value)
+			ActiveConfig:SetAttribute("Choppiness", Value)
 		end
 
 		if TargetSettings.WindDirection then
@@ -301,7 +307,7 @@ function OceanSettings.TweenTo(
 			local Target = TargetSettings.WindDirection
 			local Diff = (Target - Start + 180) % 360 - 180
 			local Value = Start + Diff * Alpha
-			ActiveMesh:SetAttribute("WindDirection", Value)
+			ActiveConfig:SetAttribute("WindDirection", Value)
 		end
 
 		if Alpha >= 1 then
@@ -343,7 +349,7 @@ function OceanSettings.Destroy(): ()
 		SettingsTrove:Destroy()
 		SettingsTrove = nil
 	end
-	OceanMesh = nil
+	ConfigurationInstance = nil
 	ComputedWaves = {}
 end
 
