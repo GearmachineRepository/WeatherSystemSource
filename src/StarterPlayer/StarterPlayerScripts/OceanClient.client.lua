@@ -32,7 +32,7 @@ OceanSettings.Initialize(Configuration)
 local Manager = OceanTileManager.new(TileTemplate, TILE_SIZE, MAX_UPDATE_DISTANCE)
 Manager:Start()
 Manager:SetWaveUpdateRate(60)
-
+Manager:SetMeshSwapDistance(1500)
 Manager:EnableTextures({
 	FrameRate = 20,
 	FolderName = "OceanMaterialVariants",

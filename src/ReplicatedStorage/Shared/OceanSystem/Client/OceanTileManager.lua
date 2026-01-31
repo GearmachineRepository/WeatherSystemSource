@@ -12,37 +12,54 @@ local OceanTexture = require(script.Parent.OceanTexture)
 local OceanTileManager = {}
 OceanTileManager.__index = OceanTileManager
 
-local GRID_SIZE = 3
+local GRID_SIZE = 9
 local HALF_GRID = math.floor(GRID_SIZE / 2)
+local MESH_POOL_SIZE = 9
 
-export type TileData = {
+export type MeshTileData = {
 	Model: Model,
 	Mesh: MeshPart,
 	Bones: {Bone},
+	InUse: boolean,
+	GridX: number?,
+	GridZ: number?,
+}
+
+export type PartTileData = {
+	Part: Part,
 	GridX: number,
 	GridZ: number,
+	HasMesh: boolean,
+	AssignedMesh: MeshTileData?,
 }
 
 export type OceanTileManager = typeof(setmetatable({} :: {
 	TileTemplate: Model,
 	TileSize: number,
 	TileContainer: Folder,
-	Tiles: {TileData},
+	PartTiles: {PartTileData},
+	MeshPool: {MeshTileData},
 	CurrentGridX: number,
 	CurrentGridZ: number,
 	MaxUpdateDistance: number,
 	MaxUpdateDistanceSquared: number,
+	MeshSwapDistance: number,
+	MeshSwapDistanceSquared: number,
 	Running: boolean,
 	TextureEnabled: boolean,
 	TextureSettings: OceanTexture.OceanTextureConfig?,
 	TextureVariants: {string},
 	TextureFrameRate: number,
 	CurrentTextureFrame: number,
-	TextureTiles: {TileData},
+	TextureTiles: {PartTileData},
 	TextureTileRefreshInterval: number,
 	TextureTileRefreshAccumulator: number,
 	WaveUpdateInterval: number,
 	WaveUpdateAccumulator: number,
+	LODRefreshInterval: number,
+	LODRefreshAccumulator: number,
+	PartColor: Color3,
+	PartMaterial: Enum.Material,
 	_Trove: typeof(Trove.new()),
 }, OceanTileManager))
 
@@ -72,10 +89,10 @@ local function WorldToGrid(Position: Vector3, TileSize: number): (number, number
 	return GridX, GridZ
 end
 
-local function GridToWorld(GridX: number, GridZ: number, TileSize: number): Vector3
+local function GridToWorld(GridX: number, GridZ: number, TileSize: number, WaterHeight: number): Vector3
 	local WorldX = GridX * TileSize
 	local WorldZ = GridZ * TileSize
-	return Vector3.new(WorldX, OceanSettings.GetBaseWaterHeight(), WorldZ)
+	return Vector3.new(WorldX, WaterHeight, WorldZ)
 end
 
 local function CollectBones(Mesh: MeshPart): {Bone}
@@ -95,6 +112,8 @@ function OceanTileManager.new(TileTemplate: Model, TileSize: number, MaxUpdateDi
 	self.TileSize = TileSize
 	self.MaxUpdateDistance = MaxUpdateDistance
 	self.MaxUpdateDistanceSquared = MaxUpdateDistance * MaxUpdateDistance
+	self.MeshSwapDistance = 400
+	self.MeshSwapDistanceSquared = 400 * 400
 	self.Running = false
 	self.TextureEnabled = false
 	self.TextureSettings = nil
@@ -106,11 +125,18 @@ function OceanTileManager.new(TileTemplate: Model, TileSize: number, MaxUpdateDi
 	self.TextureTileRefreshAccumulator = 0
 	self.WaveUpdateInterval = 1 / 60
 	self.WaveUpdateAccumulator = 0
+	self.LODRefreshInterval = 0.25
+	self.LODRefreshAccumulator = 0
 	self._Trove = Trove.new()
 
-	self.Tiles = {}
+	self.PartTiles = {}
+	self.MeshPool = {}
 	self.CurrentGridX = 0
 	self.CurrentGridZ = 0
+
+	local TemplateMesh = TileTemplate.PrimaryPart :: MeshPart
+	self.PartColor = TemplateMesh.Color
+	self.PartMaterial = TemplateMesh.Material
 
 	local Container = Instance.new("Folder")
 	Container.Name = "OceanTiles"
@@ -121,44 +147,7 @@ function OceanTileManager.new(TileTemplate: Model, TileSize: number, MaxUpdateDi
 	return self
 end
 
-function OceanTileManager._LoadTextureVariants(self: OceanTileManager, FolderName: string): ()
-	local MaterialService = game:GetService("MaterialService")
-	local VariantFolder = MaterialService:FindFirstChild(FolderName)
-
-	if not VariantFolder then
-		warn("[OceanTileManager] MaterialVariant folder not found:", FolderName)
-		return
-	end
-
-	local Variants: {MaterialVariant} = {}
-	for _, Child in VariantFolder:GetChildren() do
-		if Child:IsA("MaterialVariant") then
-			table.insert(Variants, Child)
-		end
-	end
-
-	table.sort(Variants, function(VariantA, VariantB)
-		local NumberA = tonumber(VariantA.Name) or 0
-		local NumberB = tonumber(VariantB.Name) or 0
-		return NumberA < NumberB
-	end)
-
-	for _, Variant in Variants do
-		table.insert(self.TextureVariants, Variant.Name)
-	end
-end
-
-function OceanTileManager.EnableTextures(self: OceanTileManager, Settings: OceanTexture.OceanTextureConfig): ()
-	self.TextureEnabled = true
-	self.TextureSettings = Settings
-	self.TextureFrameRate = Settings.FrameRate or 12
-
-	local FolderName = Settings.FolderName or "OceanMaterialVariants"
-	self:_LoadTextureVariants(FolderName)
-	self:_RefreshTextureTiles()
-end
-
-function OceanTileManager._CreateTile(self: OceanTileManager, GridX: number, GridZ: number): TileData
+function OceanTileManager._CreateMeshTile(self: OceanTileManager): MeshTileData
 	local Model = self.TileTemplate:Clone()
 	local Mesh = Model.PrimaryPart :: MeshPart
 
@@ -166,33 +155,106 @@ function OceanTileManager._CreateTile(self: OceanTileManager, GridX: number, Gri
 		error("[OceanTileManager] TileTemplate has no PrimaryPart")
 	end
 
-	local WorldPosition = GridToWorld(GridX, GridZ, self.TileSize)
 	Model.Parent = self.TileContainer
-	Mesh.CFrame = CFrame.new(WorldPosition)
+	Model:PivotTo(CFrame.new(0, -10000, 0))
 
 	local Bones = CollectBones(Mesh)
 
-	local TileData: TileData = {
+	return {
 		Model = Model,
 		Mesh = Mesh,
 		Bones = Bones,
-		GridX = GridX,
-		GridZ = GridZ,
+		InUse = false,
+		GridX = nil,
+		GridZ = nil,
 	}
-
-	return TileData
 end
 
-function OceanTileManager._RepositionTile(self: OceanTileManager, Tile: TileData, GridX: number, GridZ: number): ()
-	Tile.GridX = GridX
-	Tile.GridZ = GridZ
+function OceanTileManager._CreatePartTile(self: OceanTileManager, GridX: number, GridZ: number): PartTileData
+	local WaterHeight = OceanSettings.GetBaseWaterHeight()
+	local WorldPosition = GridToWorld(GridX, GridZ, self.TileSize, WaterHeight)
 
-	local WorldPosition = GridToWorld(GridX, GridZ, self.TileSize)
-	Tile.Mesh.CFrame = CFrame.new(WorldPosition)
+	local TilePart = Instance.new("Part")
+	TilePart.Name = "OceanPart"
+	TilePart.Size = Vector3.new(self.TileSize, 0.1, self.TileSize)
+	TilePart.CFrame = CFrame.new(WorldPosition)
+	TilePart.Anchored = true
+	TilePart.CanCollide = false
+	TilePart.CanQuery = false
+	TilePart.CanTouch = false
+	TilePart.CastShadow = false
+	TilePart.Color = self.PartColor
+	TilePart.MaterialVariant = "1"
+	TilePart.Material = self.PartMaterial
+	TilePart.Parent = self.TileContainer
 
-	for _, Bone in Tile.Bones do
+	return {
+		Part = TilePart,
+		GridX = GridX,
+		GridZ = GridZ,
+		HasMesh = false,
+		AssignedMesh = nil,
+	}
+end
+
+function OceanTileManager._InitializeMeshPool(self: OceanTileManager): ()
+	for _ = 1, MESH_POOL_SIZE do
+		local MeshTile = self:_CreateMeshTile()
+		table.insert(self.MeshPool, MeshTile)
+	end
+end
+
+function OceanTileManager._GetAvailableMesh(self: OceanTileManager): MeshTileData?
+	for _, MeshTile in self.MeshPool do
+		if not MeshTile.InUse then
+			return MeshTile
+		end
+	end
+	return nil
+end
+
+function OceanTileManager._AssignMeshToTile(self: OceanTileManager, PartTile: PartTileData): ()
+	if PartTile.HasMesh then
+		return
+	end
+
+	local MeshTile = self:_GetAvailableMesh()
+	if not MeshTile then
+		return
+	end
+
+	local WaterHeight = OceanSettings.GetBaseWaterHeight()
+	local WorldPosition = GridToWorld(PartTile.GridX, PartTile.GridZ, self.TileSize, WaterHeight)
+
+	MeshTile.Mesh.CFrame = CFrame.new(WorldPosition)
+	MeshTile.InUse = true
+	MeshTile.GridX = PartTile.GridX
+	MeshTile.GridZ = PartTile.GridZ
+
+	PartTile.HasMesh = true
+	PartTile.AssignedMesh = MeshTile
+	PartTile.Part.Transparency = 1
+end
+
+function OceanTileManager._ReleaseMeshFromTile(_self: OceanTileManager, PartTile: PartTileData): ()
+	if not PartTile.HasMesh or not PartTile.AssignedMesh then
+		return
+	end
+
+	local MeshTile = PartTile.AssignedMesh
+
+	MeshTile.Model:PivotTo(CFrame.new(0, -10000, 0))
+	MeshTile.InUse = false
+	MeshTile.GridX = nil
+	MeshTile.GridZ = nil
+
+	for _, Bone in MeshTile.Bones do
 		Bone.Transform = CFrame.new()
 	end
+
+	PartTile.HasMesh = false
+	PartTile.AssignedMesh = nil
+	PartTile.Part.Transparency = 0
 end
 
 function OceanTileManager._InitializeTiles(self: OceanTileManager): ()
@@ -205,14 +267,31 @@ function OceanTileManager._InitializeTiles(self: OceanTileManager): ()
 	self.CurrentGridX = CenterGridX
 	self.CurrentGridZ = CenterGridZ
 
+	self:_InitializeMeshPool()
+
 	for OffsetX = -HALF_GRID, HALF_GRID do
 		for OffsetZ = -HALF_GRID, HALF_GRID do
 			local GridX = CenterGridX + OffsetX
 			local GridZ = CenterGridZ + OffsetZ
-			local Tile = self:_CreateTile(GridX, GridZ)
-			table.insert(self.Tiles, Tile)
+			local PartTile = self:_CreatePartTile(GridX, GridZ)
+			table.insert(self.PartTiles, PartTile)
 		end
 	end
+
+	self:_UpdateLOD()
+end
+
+function OceanTileManager._RepositionPartTile(self: OceanTileManager, PartTile: PartTileData, GridX: number, GridZ: number): ()
+	if PartTile.HasMesh then
+		self:_ReleaseMeshFromTile(PartTile)
+	end
+
+	PartTile.GridX = GridX
+	PartTile.GridZ = GridZ
+
+	local WaterHeight = OceanSettings.GetBaseWaterHeight()
+	local WorldPosition = GridToWorld(GridX, GridZ, self.TileSize, WaterHeight)
+	PartTile.Part.CFrame = CFrame.new(WorldPosition)
 end
 
 function OceanTileManager._UpdateTilePositions(self: OceanTileManager): ()
@@ -240,15 +319,15 @@ function OceanTileManager._UpdateTilePositions(self: OceanTileManager): ()
 		end
 	end
 
-	local TilesToReposition: {TileData} = {}
+	local TilesToReposition: {PartTileData} = {}
 	local OccupiedPositions: {[string]: boolean} = {}
 
-	for _, Tile in self.Tiles do
-		local Key = Tile.GridX .. "," .. Tile.GridZ
+	for _, PartTile in self.PartTiles do
+		local Key = PartTile.GridX .. "," .. PartTile.GridZ
 		if NeededPositions[Key] then
 			OccupiedPositions[Key] = true
 		else
-			table.insert(TilesToReposition, Tile)
+			table.insert(TilesToReposition, PartTile)
 		end
 	end
 
@@ -260,11 +339,37 @@ function OceanTileManager._UpdateTilePositions(self: OceanTileManager): ()
 			local Key = GridX .. "," .. GridZ
 
 			if not OccupiedPositions[Key] then
-				local Tile = TilesToReposition[RepositionIndex]
-				if Tile then
-					self:_RepositionTile(Tile, GridX, GridZ)
+				local PartTile = TilesToReposition[RepositionIndex]
+				if PartTile then
+					self:_RepositionPartTile(PartTile, GridX, GridZ)
 					RepositionIndex = RepositionIndex + 1
 				end
+			end
+		end
+	end
+end
+
+function OceanTileManager._UpdateLOD(self: OceanTileManager): ()
+	local PlayerPosition = GetPlayerPosition()
+	if not PlayerPosition then
+		return
+	end
+
+	local SwapDistanceSquared = self.MeshSwapDistanceSquared
+
+	for _, PartTile in self.PartTiles do
+		local WaterHeight = OceanSettings.GetBaseWaterHeight()
+		local TileCenter = GridToWorld(PartTile.GridX, PartTile.GridZ, self.TileSize, WaterHeight)
+		local Delta = TileCenter - PlayerPosition
+		local DistanceSquared = Delta.X * Delta.X + Delta.Z * Delta.Z
+
+		if DistanceSquared < SwapDistanceSquared then
+			if not PartTile.HasMesh then
+				self:_AssignMeshToTile(PartTile)
+			end
+		else
+			if PartTile.HasMesh then
+				self:_ReleaseMeshFromTile(PartTile)
 			end
 		end
 	end
@@ -275,20 +380,24 @@ function OceanTileManager._UpdateWaves(self: OceanTileManager): ()
 	local Waves = OceanSettings.GetWaves()
 
 	local PlayerPosition = GetPlayerPosition()
+	if not PlayerPosition then
+		return
+	end
+
 	local MaxDistanceSquared = self.MaxUpdateDistanceSquared
 
-	for _, Tile in self.Tiles do
-		for _, Bone in Tile.Bones do
+	for _, MeshTile in self.MeshPool do
+		if not MeshTile.InUse then
+			continue
+		end
+
+		for _, Bone in MeshTile.Bones do
 			local WorldPosition = Bone.WorldPosition
 
-			local ShouldUpdate = true
-			if PlayerPosition then
-				local Delta = WorldPosition - PlayerPosition
-				local DistanceSquared = Delta.X * Delta.X + Delta.Z * Delta.Z
-				ShouldUpdate = DistanceSquared < MaxDistanceSquared
-			end
+			local Delta = WorldPosition - PlayerPosition
+			local DistanceSquared = Delta.X * Delta.X + Delta.Z * Delta.Z
 
-			if ShouldUpdate then
+			if DistanceSquared < MaxDistanceSquared then
 				local TotalDisplacement = Vector3.zero
 
 				for _, Wave in Waves do
@@ -318,22 +427,50 @@ function OceanTileManager._UpdateWaves(self: OceanTileManager): ()
 	end
 end
 
+function OceanTileManager._LoadTextureVariants(self: OceanTileManager, FolderName: string): ()
+	local MaterialService = game:GetService("MaterialService")
+	local VariantFolder = MaterialService:FindFirstChild(FolderName)
+
+	if not VariantFolder then
+		warn("[OceanTileManager] MaterialVariant folder not found:", FolderName)
+		return
+	end
+
+	local Variants: {MaterialVariant} = {}
+	for _, Child in VariantFolder:GetChildren() do
+		if Child:IsA("MaterialVariant") then
+			table.insert(Variants, Child)
+		end
+	end
+
+	table.sort(Variants, function(VariantA, VariantB)
+		local NumberA = tonumber(VariantA.Name) or 0
+		local NumberB = tonumber(VariantB.Name) or 0
+		return NumberA < NumberB
+	end)
+
+	for _, Variant in Variants do
+		table.insert(self.TextureVariants, Variant.Name)
+	end
+end
+
 function OceanTileManager._RefreshTextureTiles(self: OceanTileManager): ()
 	local PlayerPosition = GetPlayerPosition()
 	if not PlayerPosition then
 		return
 	end
 
-	local NearbyTiles: {TileData} = {}
+	local NearbyTiles: {PartTileData} = {}
 	local EdgeThreshold = 200
 	local HalfTile = self.TileSize / 2
 
-	for _, Tile in self.Tiles do
-		local TileCenter = Tile.Mesh.Position
-		local IsCurrentTile = Tile.GridX == self.CurrentGridX and Tile.GridZ == self.CurrentGridZ
+	for _, PartTile in self.PartTiles do
+		local WaterHeight = OceanSettings.GetBaseWaterHeight()
+		local TileCenter = GridToWorld(PartTile.GridX, PartTile.GridZ, self.TileSize, WaterHeight)
+		local IsCurrentTile = PartTile.GridX == self.CurrentGridX and PartTile.GridZ == self.CurrentGridZ
 
 		if IsCurrentTile then
-			table.insert(NearbyTiles, Tile)
+			table.insert(NearbyTiles, PartTile)
 			continue
 		end
 
@@ -350,7 +487,7 @@ function OceanTileManager._RefreshTextureTiles(self: OceanTileManager): ()
         local IsWithinXBounds = math.abs(DeltaX) < HalfTile
 
         if (NearX and NearZ) or (NearX and IsWithinZBounds) or (NearZ and IsWithinXBounds) then
-            table.insert(NearbyTiles, Tile)
+            table.insert(NearbyTiles, PartTile)
         end
 	end
 
@@ -382,13 +519,22 @@ function OceanTileManager._UpdateTextures(self: OceanTileManager, DeltaTime: num
 		return
 	end
 
-	for _, Tile in self.TextureTiles do
-		Tile.Mesh.MaterialVariant = VariantName
+	for _, PartTile in self.TextureTiles do
+		PartTile.Part.MaterialVariant = VariantName
+		if PartTile.HasMesh and PartTile.AssignedMesh then
+			PartTile.AssignedMesh.Mesh.MaterialVariant = VariantName
+		end
 	end
 end
 
 function OceanTileManager._Update(self: OceanTileManager, DeltaTime: number): ()
 	self:_UpdateTilePositions()
+
+	self.LODRefreshAccumulator = self.LODRefreshAccumulator + DeltaTime
+	if self.LODRefreshAccumulator >= self.LODRefreshInterval then
+		self.LODRefreshAccumulator = 0
+		self:_UpdateLOD()
+	end
 
 	self.WaveUpdateAccumulator = self.WaveUpdateAccumulator + DeltaTime
 	if self.WaveUpdateAccumulator >= self.WaveUpdateInterval then
@@ -435,26 +581,46 @@ function OceanTileManager.Stop(self: OceanTileManager): ()
 	self.Running = false
 	self._Trove:Clean()
 
-	for _, Tile in self.Tiles do
-		Tile.Model:Destroy()
+	for _, PartTile in self.PartTiles do
+		PartTile.Part:Destroy()
 	end
-	self.Tiles = {}
+	self.PartTiles = {}
+
+	for _, MeshTile in self.MeshPool do
+		MeshTile.Model:Destroy()
+	end
+	self.MeshPool = {}
 end
 
-function OceanTileManager.GetTileAtPosition(self: OceanTileManager, Position: Vector3): TileData?
-	local GridX, GridZ = WorldToGrid(Position, self.TileSize)
+function OceanTileManager.EnableTextures(self: OceanTileManager, Settings: OceanTexture.OceanTextureConfig): ()
+	self.TextureEnabled = true
+	self.TextureSettings = Settings
+	self.TextureFrameRate = Settings.FrameRate or 12
 
-	for _, Tile in self.Tiles do
-		if Tile.GridX == GridX and Tile.GridZ == GridZ then
-			return Tile
-		end
-	end
+	local FolderName = Settings.FolderName or "OceanMaterialVariants"
+	self:_LoadTextureVariants(FolderName)
+	self:_RefreshTextureTiles()
+end
 
-	return nil
+function OceanTileManager.SetMeshSwapDistance(self: OceanTileManager, Distance: number): ()
+	self.MeshSwapDistance = Distance
+	self.MeshSwapDistanceSquared = Distance * Distance
 end
 
 function OceanTileManager.SetWaveUpdateRate(self: OceanTileManager, UpdatesPerSecond: number): ()
 	self.WaveUpdateInterval = 1 / math.max(1, UpdatesPerSecond)
+end
+
+function OceanTileManager.GetTileAtPosition(self: OceanTileManager, Position: Vector3): PartTileData?
+	local GridX, GridZ = WorldToGrid(Position, self.TileSize)
+
+	for _, PartTile in self.PartTiles do
+		if PartTile.GridX == GridX and PartTile.GridZ == GridZ then
+			return PartTile
+		end
+	end
+
+	return nil
 end
 
 function OceanTileManager.Destroy(self: OceanTileManager): ()
